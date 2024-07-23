@@ -1,0 +1,15 @@
+# Python-related artifacts
+*.pyc
+*.pyo
+__pycache__/
+*.pyd
+*.pyi
+*.pyz
+*.pyw
+*.pyz/
+*.pyw/
+*.egg-info/
+dist/
+build/
+
+.venv/
