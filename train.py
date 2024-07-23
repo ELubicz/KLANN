@@ -209,10 +209,10 @@ for epoch in range(n_epochs):
                 model_optimizer.state_dict(),
                 "results/" + directory + "/model_optimizer.pth",
             )
-            print("new best val loss")
-        print(f"-- Train Loss {train_loss:3E} Val Loss {val_loss:3E}")
+            print("-- New best val loss")
+        print(f"-- Train Loss {train_loss:.3E} Val Loss {val_loss:.3E}")
     else:
-        print(f"-- Train Loss {train_loss:3E}")
+        print(f"-- Train Loss {train_loss:.3E}")
 
     # log loss
     writer.add_scalars(
