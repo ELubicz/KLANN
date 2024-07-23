@@ -6,6 +6,7 @@ Sound examples found [here](https://ville14.github.io/KLANN-examples/).
 Install the requirements.
 ```
 pip install -r requirements.txt
+pip install -r requirements-torch.txt
 ```
 
 ## Dataset
