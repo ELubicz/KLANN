@@ -53,13 +53,13 @@ with torch.no_grad():
 
     y_hat = model((train_input.view(1, -1, 1))).squeeze(-1)
 
-    print(f"L1 loss: {l1loss(y_hat, train_target):5}")
-    print(f"MSE loss: {mseloss(y_hat, train_target):5}")
+    print(f"L1 loss: {l1loss(y_hat, train_target):.3E}")
+    print(f"MSE loss: {mseloss(y_hat, train_target):.3E}")
     ESR_loss = ESRloss(y_hat, train_target)
-    print(f"ESR loss: {ESR_loss.item():5}")
-    print(f"ESR loss dB: {(10 * torch.log10(ESR_loss)).item():5}")
+    print(f"ESR loss: {ESR_loss.item():.3E}")
+    print(f"ESR loss dB: {(10 * torch.log10(ESR_loss)).item():.3E}")
     print(
-        f"MR-STFT loss: {mrstft(y_hat.reshape(1, 1, -1), train_target.reshape(1, 1, -1)):5}"
+        f"MR-STFT loss: {mrstft(y_hat.reshape(1, 1, -1), train_target.reshape(1, 1, -1)):.3E}"
     )
 
     torchaudio.save("results/" + directory + "/" + directory + "_hat.wav", y_hat, fs)
