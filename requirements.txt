@@ -3,3 +3,4 @@ auraloss==0.4.0
 tensorboard==2.17.0
 soundfile==0.12.1
 six==1.16.0
+tensorflow==2.17.0
