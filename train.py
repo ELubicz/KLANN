@@ -320,7 +320,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of epochs")
     parser.add_argument(
-        "--mr_stft", type=bool, default=False, help="Use MultiResolutionSTFTLoss"
+        "--mr_stft", action="store_true", default=False, help="Use MultiResolutionSTFTLoss"
     )
     parser.add_argument(
         "--model",
