@@ -15,7 +15,7 @@ class EarlyStopper:
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
-        self.min_validation_loss = float('inf')
+        self.min_validation_loss = float("inf")
 
     def early_stop(self, validation_loss):
         if validation_loss < self.min_validation_loss:
@@ -64,9 +64,9 @@ def main(
     )
     alpha = 0.001
     # real value is 2*X_patience, since the tracked metric (val_loss) is computed every other epoch
-    #scheduler_patience = 10
+    # scheduler_patience = 10
     scheduler_patience = None
-    #earlystopper_patience = int(n_epochs * 0.1)  # 10% of number of epochs
+    # earlystopper_patience = int(n_epochs * 0.1)  # 10% of number of epochs
     earlystopper_patience = None
     # ------------------------------------------------
 
@@ -144,10 +144,17 @@ def main(
         amsgrad=False,
     )
     if scheduler_patience:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(model_optimizer, mode='min', patience=scheduler_patience,
-                                                               min_lr=1e-6, verbose=True)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            model_optimizer,
+            mode="min",
+            patience=scheduler_patience,
+            min_lr=1e-6,
+            verbose=True,
+        )
     if earlystopper_patience:
         early_stopper = EarlyStopper(patience=earlystopper_patience)
+    else:
+        early_stopper = None  # just to avoid warning below
     if retrain:
         model.load_state_dict(torch.load("results/" + directory + "/model.pth"))
         model_optimizer.load_state_dict(
@@ -223,8 +230,12 @@ def main(
         end_epoch = time.time()
         print(f"-- Epoch time elapsed: {end_epoch - start_epoch:3.1f}s")
 
-        if earlystopper_patience and (epoch % 2 == 0) and early_stopper.early_stop(val_loss):
-            print(f"-- EARLY STOPPING")
+        if (
+            earlystopper_patience
+            and (epoch % 2 == 0)
+            and early_stopper.early_stop(val_loss)
+        ):
+            print("-- EARLY STOPPING")
             break
 
     writer.flush()
@@ -320,7 +331,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of epochs")
     parser.add_argument(
-        "--mr_stft", action="store_true", default=False, help="Use MultiResolutionSTFTLoss"
+        "--mr_stft",
+        action="store_true",
+        default=False,
+        help="Use MultiResolutionSTFTLoss",
     )
     parser.add_argument(
         "--model",
@@ -342,7 +356,11 @@ if __name__ == "__main__":
         help="Select folder name (used in eval.py)",
     )
     parser.add_argument(
-        "--layers", type=int, nargs='+', default="3 4 5", help="GLU MLP hidden layer sizes"
+        "--layers",
+        type=int,
+        nargs="+",
+        default=[3, 4, 5],
+        help="GLU MLP hidden layer sizes",
     )
     parser.add_argument("--layer", type=int, default=5, help="FC layer size in MODEL2")
     parser.add_argument("--num-biquads", type=int, default=5, help="Number of biquads")
