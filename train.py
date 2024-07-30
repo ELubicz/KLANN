@@ -10,6 +10,24 @@ from torch.utils.tensorboard import SummaryWriter
 from models import MODEL2, MODEL1
 
 
+class EarlyStopper:
+    def __init__(self, patience=10, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.min_validation_loss = float('inf')
+
+    def early_stop(self, validation_loss):
+        if validation_loss < self.min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (self.min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
+
+
 def main(
     retrain=False,
     n_epochs=3,
@@ -45,6 +63,11 @@ def main(
         mag_distance="L1",
     )
     alpha = 0.001
+    # real value is 2*X_patience, since the tracked metric (val_loss) is computed every other epoch
+    #scheduler_patience = 10
+    scheduler_patience = None
+    #earlystopper_patience = int(n_epochs * 0.1)  # 10% of number of epochs
+    earlystopper_patience = None
     # ------------------------------------------------
 
     # create folder
@@ -120,6 +143,11 @@ def main(
         weight_decay=0,
         amsgrad=False,
     )
+    if scheduler_patience:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(model_optimizer, mode='min', patience=scheduler_patience,
+                                                               min_lr=1e-6, verbose=True)
+    if earlystopper_patience:
+        early_stopper = EarlyStopper(patience=earlystopper_patience)
     if retrain:
         model.load_state_dict(torch.load("results/" + directory + "/model.pth"))
         model_optimizer.load_state_dict(
@@ -183,6 +211,8 @@ def main(
                 )
                 print("-- New best val loss")
             print(f"-- Train Loss {train_loss:.3E} Val Loss {val_loss:.3E}")
+            if scheduler_patience:
+                scheduler.step(val_loss, epoch)
         else:
             print(f"-- Train Loss {train_loss:.3E}")
 
@@ -192,6 +222,11 @@ def main(
         )
         end_epoch = time.time()
         print(f"-- Epoch time elapsed: {end_epoch - start_epoch:3.1f}s")
+
+        if earlystopper_patience and (epoch % 2 == 0) and early_stopper.early_stop(val_loss):
+            print(f"-- EARLY STOPPING")
+            break
+
     writer.flush()
     print(f"Total time elapsed: {time.time() - start:3.1f}s")
 
