@@ -114,8 +114,10 @@ def main(
         amsgrad=False,
     )
     if retrain:
-        model.load_weights("results/" + directory + "/model.h5")
-        model_optimizer.load_weights("results/" + directory + "/model_optimizer.h5")
+        model.load_weights("results/" + directory + "/model_weigths.h5")
+        model_optimizer.load_weights(
+            "results/" + directory + "/model_optimizer_weigths.h5"
+        )
 
     print("Starting training")
 
@@ -166,9 +168,10 @@ def main(
                 )
             if val_loss < best_loss:
                 best_loss = val_loss
-                model.save_weights("results/" + directory + "/model.h5")
+                model.save_weights("results/" + directory + "/model_weigths.h5")
+                model.save("results/" + directory + "/model.h5")
                 model_optimizer.save_weights(
-                    "results/" + directory + "/model_optimizer.h5"
+                    "results/" + directory + "/model_optimizer_weigths.h5"
                 )
                 print("-- New best val loss")
             print(f"-- Train Loss {train_loss:.3E} Val Loss {val_loss:.3E}")
@@ -202,8 +205,8 @@ def train_loop(
 ):
     """Train loop for one epoch"""
     train_loss = 0
-    for X, y in dataset:
-        x_in = X.to(device)
+    for x, y in dataset:
+        x_in = x.to(device)
         y_out = y.to(device)
         # reset gradient
         model_optimizer.zero_grad()
@@ -240,10 +243,10 @@ def val_loop(
 ):
     """Validation loop for one epoch"""
     val_loss = 0
-    for X, y in dataset:
-        X_in = X.to(device)
+    for x, y in dataset:
+        x_in = x.to(device)
         y_out = y.to(device)
-        y_hat = model(X_in)
+        y_hat = model(x_in)
 
         if mr_stft:
             loss = loss_func(
