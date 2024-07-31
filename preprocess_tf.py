@@ -7,7 +7,7 @@ def PreProcess(train_input, train_target, sequence_length, truncate_length, batc
     data = AudioDataSet(train_input, train_target, sequence_length, truncate_length)
     return (
         tf.data.Dataset.from_generator(
-            data.__getitem__,
+            data.create_generator,
             output_signature=(
                 tf.TensorSpec(
                     shape=(sequence_length + truncate_length, 1), dtype=tf.float32
@@ -32,8 +32,9 @@ class AudioDataSet:
         )
         self.length = self.input_sequence.shape[0]
 
-    def __getitem__(self, index):
-        return self.input_sequence[index, :, :], self.target_sequence[index, :, :]
+    def create_generator(self):
+        for i in range(self.length):
+            yield self.input_sequence[i], self.target_sequence[i]
 
     def __len__(self):
         return self.length
