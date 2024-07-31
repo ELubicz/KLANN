@@ -42,6 +42,8 @@ def main(
     seq_length=1024,
     trunc_length=1 * 32768 - 1024,
     overwrite=False,
+    batch_size=50,
+    learning_rate=1e-2
 ):
 
     # neural network architecture:
@@ -52,8 +54,6 @@ def main(
 
     # MODIFIABLE
     # ------------------------------------------------
-    batch_size = 50
-    learning_rate = 1e-3
     # loss functions
     loss_func = nn.MSELoss()
     loss_func2 = auraloss.freq.MultiResolutionSTFTLoss(
@@ -64,10 +64,8 @@ def main(
     )
     alpha = 0.001
     # real value is 2*X_patience, since the tracked metric (val_loss) is computed every other epoch
-    # scheduler_patience = 10
-    scheduler_patience = None
-    # earlystopper_patience = int(n_epochs * 0.1)  # 10% of number of epochs
-    earlystopper_patience = None
+    scheduler_patience = int(10 / 2)  # 10 epochs
+    earlystopper_patience = int(n_epochs * 0.1 / 2)  # 10% of total number of epochs
     # ------------------------------------------------
 
     # create folder
@@ -219,7 +217,11 @@ def main(
                 print("-- New best val loss")
             print(f"-- Train Loss {train_loss:.3E} Val Loss {val_loss:.3E}")
             if scheduler_patience:
-                scheduler.step(val_loss, epoch)
+                epoch_lr = scheduler.get_last_lr()
+                print(f"-- Epoch lr: {epoch_lr}")
+                scheduler.step(val_loss)
+                if epoch_lr != scheduler.get_last_lr():
+                    print(f"-- Decaying lr to {scheduler.get_last_lr()}")
         else:
             print(f"-- Train Loss {train_loss:.3E}")
 
@@ -390,6 +392,19 @@ if __name__ == "__main__":
         default=False,
         help="Overwrite existing folder, if it exists",
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=50,
+        help="Batch size used to feed the model during training",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=1e-2,
+        help="Learning rate used during training",
+    )
+
     args = parser.parse_args()
 
     main(
@@ -406,4 +421,6 @@ if __name__ == "__main__":
         args.seq_length,
         args.trunc_length,
         args.overwrite,
+        args.batch_size,
+        args.learning_rate,
     )

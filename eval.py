@@ -7,7 +7,7 @@ from models import MODEL2, MODEL1
 # MODIFIABLE
 # ------------------------------------------------
 # select model to evaluate (directory name)
-directory = "facebender-rndamp_small_MODEL1"
+directory = "facebender-rndamp_small_MODEL1_test2"
 # ------------------------------------------------
 
 
