@@ -51,12 +51,17 @@ def main(
 
     # create folder
     if not retrain:
+        results_dir = os.path.join("results", directory)
         if overwrite:
-            shutil.rmtree("results/" + directory, ignore_errors=True)
+            shutil.rmtree(results_dir, ignore_errors=True)
+        elif os.path.exists(results_dir):
+            raise FileExistsError(
+                f"Folder {results_dir} already exists. Use --overwrite to overwrite it."
+            )
         os.mkdir("results/" + directory)
 
     # create parameters file
-    with open("results/" + directory + "/parameters.txt", "w", encoding="utf-8") as f:
+    with open(os.path.join(results_dir, "parameters.txt"), "w", encoding="utf-8") as f:
         f.write(
             f"data: {data}\n"
             + f"model_train: {model_train}\n"
@@ -124,6 +129,8 @@ def main(
         model_optimizer.load_weights(
             "results/" + directory + "/model_optimizer_weigths.h5"
         )
+        # reset the learning rate to the initial value
+        model_optimizer.learning_rate.assign(learning_rate)
 
     # callbacks
     callbacks = None
