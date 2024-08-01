@@ -260,6 +260,7 @@ def train_loop(
         with tf.GradientTape() as tape:
             # add one dimension to the input
             x = tf.expand_dims(x, axis=-1)
+            y = tf.expand_dims(y, axis=-1)
             y_hat = model.call(x, training=True)
 
             # calculate loss
