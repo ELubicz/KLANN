@@ -147,7 +147,6 @@ def main(
             mode="min",
             patience=scheduler_patience,
             min_lr=1e-6,
-            verbose=True,
         )
     if earlystopper_patience:
         early_stopper = EarlyStopper(patience=earlystopper_patience)
@@ -158,6 +157,9 @@ def main(
         model_optimizer.load_state_dict(
             torch.load("results/" + directory + "/model_optimizer.pth")
         )
+        # need to set the initial lr on the loaded optimizer (if not last lr of previous training is used)
+        for group in model_optimizer.param_groups:
+            group['lr'] = learning_rate
 
     print("Starting training")
 
