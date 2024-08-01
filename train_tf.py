@@ -25,13 +25,13 @@ def main(
     trunc_length=1 * 32768 - 1024,
     overwrite=False,
     batch_size=50,
-    learning_rate=1e-2
+    learning_rate=1e-2,
 ):
 
     # neural network architecture:
     # GLU MLP - biquad filters - GLU MLP
 
-    device = tf.device("cuda" if tf.config.list_physical_devices('GPU') else "cpu")
+    device = tf.device("cuda" if tf.config.list_physical_devices("GPU") else "cpu")
     print("using", device)
 
     # MODIFIABLE
@@ -130,18 +130,48 @@ def main(
     if scheduler_patience:
         if earlystopper_patience:
             callbacks = CallbackList(
-                [ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=scheduler_patience, min_lr=1e-6, verbose=1),
-                 EarlyStopping(monitor='val_loss', patience=earlystopper_patience, verbose=1)],
-                add_history=True, model=model)
+                [
+                    ReduceLROnPlateau(
+                        monitor="val_loss",
+                        factor=0.1,
+                        patience=scheduler_patience,
+                        min_lr=1e-6,
+                        verbose=1,
+                    ),
+                    EarlyStopping(
+                        monitor="val_loss", patience=earlystopper_patience, verbose=1
+                    ),
+                ],
+                add_history=True,
+                model=model,
+            )
         else:
             callbacks = CallbackList(
-                [ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=scheduler_patience, min_lr=1e-6,
-                                   verbose=1)],
-                add_history=True, model=model)
+                [
+                    ReduceLROnPlateau(
+                        monitor="val_loss",
+                        factor=0.1,
+                        patience=scheduler_patience,
+                        min_lr=1e-6,
+                        verbose=1,
+                    )
+                ],
+                add_history=True,
+                model=model,
+            )
     elif earlystopper_patience:
-        callbacks = CallbackList([EarlyStopping(monitor='val_loss', patience=earlystopper_patience, verbose=1)],
-                                 add_history=True, model=model)
-    callback_log = {}  # log to update the monitored values during training (need to update manually!!)
+        callbacks = CallbackList(
+            [
+                EarlyStopping(
+                    monitor="val_loss", patience=earlystopper_patience, verbose=1
+                )
+            ],
+            add_history=True,
+            model=model,
+        )
+    callback_log = (
+        {}
+    )  # log to update the monitored values during training (need to update manually!!)
     if callbacks:
         callbacks.on_train_begin(logs=callback_log)
 
@@ -198,7 +228,7 @@ def main(
                     callbacks,
                     callback_log,
                 )
-            callback_log['val_loss'] = val_loss  # update callback log
+            callback_log["val_loss"] = val_loss  # update callback log
             if val_loss < best_loss:
                 best_loss = val_loss
                 model.save_weights("results/" + directory + "/model_weigths.h5")
@@ -222,7 +252,7 @@ def main(
             callbacks.on_epoch_end(epoch, logs=callback_log)
         # TODO: delete this?
         ## check if early stopping has triggered stop_training
-        #if model.stop_training:
+        # if model.stop_training:
         #    break
 
     if callbacks:
@@ -258,7 +288,7 @@ def train_loop(
 
         # compute prediction
         with tf.GradientTape() as tape:
-            # add one dimension to the input
+            # add one dimension to the input and output
             x = tf.expand_dims(x, axis=-1)
             y = tf.expand_dims(y, axis=-1)
             y_hat = model.call(x, training=True)
@@ -292,7 +322,15 @@ def train_loop(
 
 
 def val_loop(
-    model, dataset, mr_stft, loss_func, loss_func2, alpha, trunc_length, callbacks, callback_log
+    model,
+    dataset,
+    mr_stft,
+    loss_func,
+    loss_func2,
+    alpha,
+    trunc_length,
+    callbacks,
+    callback_log,
 ):
     """Validation loop for one epoch"""
     val_loss = 0
@@ -302,6 +340,9 @@ def val_loop(
             callbacks.on_batch_begin(batch, logs=callback_log)
             callbacks.on_test_batch_begin(batch, logs=callback_log)
 
+        # add one dimension to the input and output
+        x = tf.expand_dims(x, axis=-1)
+        y = tf.expand_dims(y, axis=-1)
         y_hat = model.call(x, training=False)
 
         if mr_stft:
@@ -425,5 +466,5 @@ if __name__ == "__main__":
         args.trunc_length,
         args.overwrite,
         args.batch_size,
-        args.learning_rate
+        args.learning_rate,
     )
