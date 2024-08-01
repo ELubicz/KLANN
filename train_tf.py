@@ -6,6 +6,7 @@ import torchaudio
 import auraloss
 from preprocess_tf import PreProcess
 from tensorflow.summary import create_file_writer
+from tensorflow.keras.callbacks import CallbackList, ReduceLROnPlateau, EarlyStopping
 from models_tf import MODEL2, MODEL1
 
 
@@ -23,18 +24,18 @@ def main(
     seq_length=1024,
     trunc_length=1 * 32768 - 1024,
     overwrite=False,
+    batch_size=50,
+    learning_rate=1e-2
 ):
 
     # neural network architecture:
     # GLU MLP - biquad filters - GLU MLP
 
-    device = tf.device("cuda" if tf.test.is_gpu_available() else "cpu")
+    device = tf.device("cuda" if tf.config.list_physical_devices('GPU') else "cpu")
     print("using", device)
 
     # MODIFIABLE
     # ------------------------------------------------
-    batch_size = 50
-    learning_rate = 1e-3
     # loss functions
     loss_func = tf.keras.losses.MeanSquaredError()
     loss_func2 = auraloss.freq.MultiResolutionSTFTLoss(
@@ -44,6 +45,8 @@ def main(
         mag_distance="L1",
     )
     alpha = 0.001
+    scheduler_patience = int(10)  # 10 epochs
+    earlystopper_patience = int(n_epochs * 0.1)  # 10% of total number of epochs
     # ------------------------------------------------
 
     # create folder
@@ -110,7 +113,6 @@ def main(
         beta_1=0.9,
         beta_2=0.999,
         epsilon=1e-08,
-        decay=0,
         amsgrad=False,
     )
     if retrain:
@@ -119,20 +121,41 @@ def main(
             "results/" + directory + "/model_optimizer_weigths.h5"
         )
 
+    # callbacks
+    callbacks = None
+    if scheduler_patience:
+        if earlystopper_patience:
+            callbacks = CallbackList(
+                [ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=scheduler_patience, min_lr=1e-6, verbose=1),
+                 EarlyStopping(monitor='val_loss', patience=earlystopper_patience, verbose=1)],
+                add_history=True, model=model)
+        else:
+            callbacks = CallbackList(
+                [ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=scheduler_patience, min_lr=1e-6,
+                                   verbose=1)],
+                add_history=True, model=model)
+    elif earlystopper_patience:
+        callbacks = CallbackList([EarlyStopping(monitor='val_loss', patience=earlystopper_patience, verbose=1)],
+                                 add_history=True, model=model)
+    callback_log = {}  # log to update the monitored values during training (need to update manually!!)
+    if callbacks:
+        callbacks.on_train_begin(logs=callback_log)
+
     print("Starting training")
 
     if retrain:
-        with tf.GradientTape() as tape:
-            best_loss = val_loop(
-                device,
-                model,
-                val_dataset,
-                mr_stft,
-                loss_func,
-                loss_func2,
-                alpha,
-                trunc_length,
-            )
+        best_loss, callback_log = val_loop(
+            device,
+            model,
+            val_dataset,
+            mr_stft,
+            loss_func,
+            loss_func2,
+            alpha,
+            trunc_length,
+            callbacks.callbacks,
+            callback_log,
+        )
     else:
         best_loss = float("inf")
 
@@ -140,8 +163,10 @@ def main(
     for epoch in range(n_epochs):
         start_epoch = time.time()
         print(f"Epoch {epoch+1}/{n_epochs}")
+        if callbacks:
+            callbacks.on_epoch_begin(epoch, logs=callback_log)
         # train for one epoch
-        train_loss = train_loop(
+        train_loss, callback_log = train_loop(
             device,
             model,
             train_dataset,
@@ -151,12 +176,14 @@ def main(
             alpha,
             trunc_length,
             model_optimizer,
+            callbacks,
+            callback_log,
         )
 
         # validation
         if epoch % 2 == 0:
             with tf.GradientTape() as tape:
-                val_loss = val_loop(
+                val_loss, callback_log = val_loop(
                     device,
                     model,
                     val_dataset,
@@ -165,7 +192,10 @@ def main(
                     loss_func2,
                     alpha,
                     trunc_length,
+                    callbacks,
+                    callback_log,
                 )
+            callback_log['val_loss'] = val_loss  # update callback log
             if val_loss < best_loss:
                 best_loss = val_loss
                 model.save_weights("results/" + directory + "/model_weigths.h5")
@@ -184,6 +214,16 @@ def main(
             tf.summary.scalar("Val loss", val_loss, step=epoch)
         end_epoch = time.time()
         print(f"-- Epoch time elapsed: {end_epoch - start_epoch:3.1f}s")
+
+        if callbacks:
+            callbacks.on_epoch_end(epoch, logs=callback_log)
+        # check if early stopping has triggered stop_training
+        if model.stop_training:
+            break
+
+    if callbacks:
+        callbacks.on_train_end(logs=callback_log)
+
     writer.flush()
     print(f"Total time elapsed: {time.time() - start:3.1f}s")
 
@@ -202,30 +242,37 @@ def train_loop(
     alpha,
     trunc_length,
     model_optimizer,
+    callbacks,
+    callback_log,
 ):
     """Train loop for one epoch"""
     train_loss = 0
+    batch = 0
     for x, y in dataset:
-        x_in = x.to(device)
-        y_out = y.to(device)
+        if callbacks:
+            callbacks.on_batch_begin(batch, logs=callback_log)
+            callbacks.on_train_batch_begin(batch, logs=callback_log)
+
+        #x_in = x.to(device)
+        #y_out = y.to(device)
         # reset gradient
-        model_optimizer.zero_grad()
+        #model_optimizer.zero_grad()
 
         # compute prediction
         with tf.GradientTape() as tape:
-            y_hat = model(x_in)
+            y_hat = model.call(x, training=True)
 
             # calculate loss
             # truncate before to stabilize filters
             if mr_stft:
                 loss = loss_func(
-                    y_hat[:, trunc_length:, 0], y_out[:, trunc_length:, 0]
+                    y_hat[:, trunc_length:, 0], y[:, trunc_length:, 0]
                 ) + alpha * loss_func2(
                     y_hat[:, trunc_length:, :].permute(0, 2, 1),
-                    y_out[:, trunc_length:, :].permute(0, 2, 1),
+                    y[:, trunc_length:, :].permute(0, 2, 1),
                 )
             else:
-                loss = loss_func(y_hat[:, trunc_length:, 0], y_out[:, trunc_length:, 0])
+                loss = loss_func(y_hat[:, trunc_length:, 0], y[:, trunc_length:, 0])
 
         # backpropagation
         gradients = tape.gradient(loss, model.trainable_variables)
@@ -234,33 +281,48 @@ def train_loop(
         # accumulate loss
         train_loss += loss.numpy()
 
+        if callbacks:
+            callbacks.on_batch_end(batch, logs=callback_log)
+            callbacks.on_train_batch_end(batch, logs=callback_log)
+        batch += 1
+
     # return average loss of one epoch
-    return train_loss / len(dataset)
+    return train_loss / batch, callback_log
 
 
 def val_loop(
-    device, model, dataset, mr_stft, loss_func, loss_func2, alpha, trunc_length
+    device, model, dataset, mr_stft, loss_func, loss_func2, alpha, trunc_length, callbacks, callback_log
 ):
     """Validation loop for one epoch"""
     val_loss = 0
+    batch = 0
     for x, y in dataset:
-        x_in = x.to(device)
-        y_out = y.to(device)
-        y_hat = model(x_in)
+        if callbacks:
+            callbacks.on_batch_begin(batch, logs=callback_log)
+            callbacks.on_test_batch_begin(batch, logs=callback_log)
+
+        #x_in = x.to(device)
+        #y_out = y.to(device)
+        y_hat = model.call(x, training=False)
 
         if mr_stft:
             loss = loss_func(
-                y_hat[:, trunc_length:, 0], y_out[:, trunc_length:, 0]
+                y_hat[:, trunc_length:, 0], y[:, trunc_length:, 0]
             ) + alpha * loss_func2(
                 y_hat[:, trunc_length:, :].permute(0, 2, 1),
-                y_out[:, trunc_length:, :].permute(0, 2, 1),
+                y[:, trunc_length:, :].permute(0, 2, 1),
             )
         else:
-            loss = loss_func(y_hat[:, trunc_length:, 0], y_out[:, trunc_length:, 0])
+            loss = loss_func(y_hat[:, trunc_length:, 0], y[:, trunc_length:, 0])
 
         val_loss += loss.numpy()
 
-    return val_loss / len(dataset)
+        if callbacks:
+            callbacks.on_batch_end(batch, logs=callback_log)
+            callbacks.on_test_batch_end(batch, logs=callback_log)
+        batch += 1
+
+    return val_loss / batch, callback_log
 
 
 if __name__ == "__main__":
@@ -334,6 +396,19 @@ if __name__ == "__main__":
         default=False,
         help="Overwrite existing folder, if it exists",
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=50,
+        help="Batch size used to feed the model during training",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=1e-2,
+        help="Learning rate used during training",
+    )
+
     args = parser.parse_args()
 
     main(
@@ -350,4 +425,6 @@ if __name__ == "__main__":
         args.seq_length,
         args.trunc_length,
         args.overwrite,
+        args.batch_size,
+        args.learning_rate
     )
