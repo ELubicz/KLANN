@@ -2,7 +2,7 @@ import os
 import shutil
 import time
 import tensorflow as tf
-import torchaudio
+import soundfile as sf
 import auraloss
 from preprocess_tf import PreProcess
 from tensorflow.summary import create_file_writer
@@ -82,21 +82,25 @@ def main(
     writer = create_file_writer("results/" + directory + "/" + "model_" + data)
 
     # preprocess audio
-    train_input, fs = torchaudio.load("data/train/" + data + "-input.wav")
-    train_target, fs = torchaudio.load("data/train/" + data + "-target.wav")
-    val_input, fs = torchaudio.load("data/val/" + data + "-input.wav")
-    val_target, fs = torchaudio.load("data/val/" + data + "-target.wav")
+    train_input, _ = sf.read("data/train/" + data + "-input.wav", dtype="float32")
+    train_target, _ = sf.read("data/train/" + data + "-target.wav")
+    train_input = tf.convert_to_tensor(train_input, dtype=tf.float32)
+    train_target = tf.convert_to_tensor(train_target, dtype=tf.float32)
+    val_input, _ = sf.read("data/val/" + data + "-input.wav")
+    val_target, _ = sf.read("data/val/" + data + "-target.wav")
+    val_input = tf.convert_to_tensor(val_input, dtype=tf.float32)
+    val_target = tf.convert_to_tensor(val_target, dtype=tf.float32)
     # DataLoader
     print("Preprocessing audio (train)")
     start = time.time()
     train_dataset = PreProcess(
-        train_input.float(), train_target.float(), seq_length, trunc_length, batch_size
+        train_input, train_target, seq_length, trunc_length, batch_size
     )
     print(f"Time elapsed: {time.time() - start:3.1f}s")
     print("Preprocessing audio (val)")
     start = time.time()
     val_dataset = PreProcess(
-        val_input.float(), val_target.float(), seq_length, trunc_length, batch_size
+        val_input, val_target, seq_length, trunc_length, batch_size
     )
     print(f"Time elapsed: {time.time() - start:3.1f}s")
 
@@ -144,18 +148,18 @@ def main(
     print("Starting training")
 
     if retrain:
-        best_loss, callback_log = val_loop(
-            device,
-            model,
-            val_dataset,
-            mr_stft,
-            loss_func,
-            loss_func2,
-            alpha,
-            trunc_length,
-            callbacks.callbacks,
-            callback_log,
-        )
+        with device:
+            best_loss, callback_log = val_loop(
+                model,
+                val_dataset,
+                mr_stft,
+                loss_func,
+                loss_func2,
+                alpha,
+                trunc_length,
+                callbacks.callbacks,
+                callback_log,
+            )
     else:
         best_loss = float("inf")
 
@@ -166,25 +170,24 @@ def main(
         if callbacks:
             callbacks.on_epoch_begin(epoch, logs=callback_log)
         # train for one epoch
-        train_loss, callback_log = train_loop(
-            device,
-            model,
-            train_dataset,
-            mr_stft,
-            loss_func,
-            loss_func2,
-            alpha,
-            trunc_length,
-            model_optimizer,
-            callbacks,
-            callback_log,
-        )
+        with device:
+            train_loss, callback_log = train_loop(
+                model,
+                train_dataset,
+                mr_stft,
+                loss_func,
+                loss_func2,
+                alpha,
+                trunc_length,
+                model_optimizer,
+                callbacks,
+                callback_log,
+            )
 
         # validation
         if epoch % 2 == 0:
-            with tf.GradientTape() as tape:
+            with device:
                 val_loss, callback_log = val_loop(
-                    device,
                     model,
                     val_dataset,
                     mr_stft,
@@ -217,9 +220,10 @@ def main(
 
         if callbacks:
             callbacks.on_epoch_end(epoch, logs=callback_log)
-        # check if early stopping has triggered stop_training
-        if model.stop_training:
-            break
+        # TODO: delete this?
+        ## check if early stopping has triggered stop_training
+        #if model.stop_training:
+        #    break
 
     if callbacks:
         callbacks.on_train_end(logs=callback_log)
@@ -233,7 +237,6 @@ def main(
 
 
 def train_loop(
-    device,
     model,
     dataset,
     mr_stft,
@@ -253,13 +256,10 @@ def train_loop(
             callbacks.on_batch_begin(batch, logs=callback_log)
             callbacks.on_train_batch_begin(batch, logs=callback_log)
 
-        #x_in = x.to(device)
-        #y_out = y.to(device)
-        # reset gradient
-        #model_optimizer.zero_grad()
-
         # compute prediction
         with tf.GradientTape() as tape:
+            # add one dimension to the input
+            x = tf.expand_dims(x, axis=-1)
             y_hat = model.call(x, training=True)
 
             # calculate loss
@@ -291,7 +291,7 @@ def train_loop(
 
 
 def val_loop(
-    device, model, dataset, mr_stft, loss_func, loss_func2, alpha, trunc_length, callbacks, callback_log
+    model, dataset, mr_stft, loss_func, loss_func2, alpha, trunc_length, callbacks, callback_log
 ):
     """Validation loop for one epoch"""
     val_loss = 0
@@ -301,8 +301,6 @@ def val_loop(
             callbacks.on_batch_begin(batch, logs=callback_log)
             callbacks.on_test_batch_begin(batch, logs=callback_log)
 
-        #x_in = x.to(device)
-        #y_out = y.to(device)
         y_hat = model.call(x, training=False)
 
         if mr_stft:

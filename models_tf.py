@@ -2,21 +2,24 @@ import math
 import numpy as np
 import tensorflow as tf
 
-import tensorflow as tf
-
 
 class GLU(tf.keras.layers.Layer):
-    def __init__(self, bias=True, dim=-1, **kwargs):
+    def __init__(self, units, bias=True, dim=-1, **kwargs):
         super(GLU, self).__init__(**kwargs)
         self.bias = bias
         self.dim = dim
-        self.dense = tf.keras.layers.Dense(2, use_bias=bias)
+        self.dense = tf.keras.layers.Dense(units, use_bias=bias)
+        # Weights and bias for sigmoid
+        self.dense_sigmoid = tf.keras.layers.Dense(units, use_bias=bias)
 
     def call(self, x):
-        out, gate = tf.split(x, 2, axis=self.dim)
-        gate = tf.sigmoid(gate)
-        x = tf.multiply(out, gate)
-        return x
+        x = self.dense(x)
+        x_sigmoid = self.dense_sigmoid(x)
+        return x * tf.nn.sigmoid(x_sigmoid)
+    
+    def build(self, input_shape):
+        self.dense.build(input_shape)
+        super(GLU, self).build(input_shape)
 
 
 class DSVF(tf.Module):
@@ -78,11 +81,9 @@ class MODEL1(tf.Module):
     def __init__(self, layers, n, N):
         self.n = n
         mlp1 = []
-        mlp1.append(tf.keras.layers.Dense(2 * layers[0]))
-        mlp1.append(GLU())
+        mlp1.append(GLU(2 * layers[0]))
         for i in range(1, len(layers)):
-            mlp1.append(tf.keras.layers.Dense(2 * layers[i]))
-            mlp1.append(GLU())
+            mlp1.append(GLU(2 * layers[i]))
         mlp1.append(tf.keras.layers.Dense(n))
         self.mlp1 = tf.keras.Sequential(mlp1)
 
@@ -92,20 +93,20 @@ class MODEL1(tf.Module):
 
         layers.reverse()
         mlp2 = []
-        mlp2.append(tf.keras.layers.Dense(2 * layers[0]))
-        mlp2.append(GLU())
+        mlp2.append(GLU(2 * layers[0]))
         for i in range(1, len(layers)):
-            mlp2.append(tf.keras.layers.Dense(2 * layers[i]))
-            mlp2.append(GLU())
+            mlp2.append(GLU(2 * layers[i]))
         mlp2.append(tf.keras.layers.Dense(1))
         self.mlp2 = tf.keras.Sequential(mlp2)
 
-    @tf.function
     def call(self, x, training=None):
         z = self.mlp1(x)
         y = []
         for i in range(self.n):
-            y.append(self.filters[i].call(z[:, :, i], training=training)[:, :, tf.newaxis])
+            y_filt = self.filters[i].call(z[:, :, i], training=training)
+            # expand dimension
+            y_filt = tf.expand_dims(y_filt, axis=-1)
+            y.append(y_filt)
         return self.mlp2(tf.concat(y, axis=-1))
 
 

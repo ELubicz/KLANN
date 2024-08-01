@@ -4,48 +4,28 @@ import numpy as np
 
 # create dataset
 def PreProcess(train_input, train_target, sequence_length, truncate_length, batch_size):
-    data = AudioDataSet(train_input, train_target, sequence_length, truncate_length)
-    return (
-        tf.data.Dataset.from_generator(
-            data.create_generator,
-            output_signature=(
-                tf.TensorSpec(
-                    shape=(sequence_length + truncate_length, 1), dtype=tf.float32
-                ),
-                tf.TensorSpec(
-                    shape=(sequence_length + truncate_length, 1), dtype=tf.float32
-                ),
-            ),
-        )
-        .batch(batch_size)
-        .shuffle(buffer_size=len(data))
+    num_sequences = int(
+        np.floor((train_input.shape[0] - truncate_length) / sequence_length)
     )
+    indices = [i * sequence_length for i in range(num_sequences)]
+    # Create TensorFlow dataset from indices
+    dataset = tf.data.Dataset.from_tensor_slices(indices)
 
-
-class AudioDataSet:
-    def __init__(self, input_data, target, sequence_length, truncate_length):
-        self.input_sequence = self.wrap_to_sequences(
-            input_data, sequence_length, truncate_length
+    # Map indices to sequences
+    def map_fn(i):
+        return (
+            train_input[i : i + sequence_length + truncate_length],
+            train_target[i : i + sequence_length + truncate_length],
         )
-        self.target_sequence = self.wrap_to_sequences(
-            target, sequence_length, truncate_length
-        )
-        self.length = self.input_sequence.shape[0]
 
-    def create_generator(self):
-        for i in range(self.length):
-            yield self.input_sequence[i], self.target_sequence[i]
-
-    def __len__(self):
-        return self.length
-
-    def wrap_to_sequences(self, waveform, sequence_length, truncate_length):
-        num_sequences = int(
-            np.floor((waveform.shape[1] - truncate_length) / sequence_length)
-        )
-        tensors = []
-        for i in range(num_sequences):
-            low = i * sequence_length
-            high = low + sequence_length + truncate_length
-            tensors.append(waveform[0, low:high])
-        return tf.expand_dims(tf.stack(tensors, axis=0), axis=-1)
+    dataset = dataset.map(map_fn)
+    # Batch
+    dataset = dataset.batch(batch_size)
+    # Shuffle the batches
+    buffer_size = (
+        dataset.cardinality().numpy()
+        if tf.executing_eagerly()
+        else dataset.cardinality()
+    )
+    dataset = dataset.shuffle(buffer_size=buffer_size, reshuffle_each_iteration=True)
+    return dataset
