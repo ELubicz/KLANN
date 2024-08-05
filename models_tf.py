@@ -78,8 +78,10 @@ class DSVF(tf.Module):
 
 # DSVFs in parallel
 class MODEL1(tf.Module):
-    def __init__(self, layers, n, N):
+    def __init__(self, layers, n, N, optimizer):
         self.n = n
+        self.optimizer = optimizer  # needed by ReduceLROnPlateau callback
+        self.stop_training = False  # needed by EarlyStopping callback
         mlp1 = []
         mlp1.append(GLU(2 * layers[0]))
         for i in range(1, len(layers)):
@@ -112,8 +114,10 @@ class MODEL1(tf.Module):
 
 # DSVFs in parallel and series
 class MODEL2(tf.Module):
-    def __init__(self, layers, layer, n, N):
+    def __init__(self, layers, layer, n, N, optimizer):
         self.n = n
+        self.optimizer = optimizer  # needed by ReduceLROnPlateau callback
+        self.stop_training = False  # needed by EarlyStopping callback
         mlp1 = []
         mlp1.append(tf.keras.layers.Dense(2 * layers[0]))
         mlp1.append(GLU())

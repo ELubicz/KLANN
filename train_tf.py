@@ -109,14 +109,6 @@ def main(
     )
     print(f"Time elapsed: {time.time() - start:3.1f}s")
 
-    # initialize model
-    print("Initializing model")
-    if model_train == "MODEL1":
-        model = MODEL1(glu_mlp_hidden_layer_sizes, num_biquads, fir_length)
-    if model_train == "MODEL2":
-        model = MODEL2(
-            glu_mlp_hidden_layer_sizes, fc_layer_size, num_biquads, fir_length
-        )
     model_optimizer = tf.keras.optimizers.Adam(
         learning_rate=learning_rate,
         beta_1=0.9,
@@ -124,13 +116,24 @@ def main(
         epsilon=1e-08,
         amsgrad=False,
     )
-    if retrain:
-        model.load_weights("results/" + directory + "/model_weigths.h5")
-        model_optimizer.load_weights(
-            "results/" + directory + "/model_optimizer_weigths.h5"
+    # initialize model
+    print("Initializing model")
+    if model_train == "MODEL1":
+        model = MODEL1(glu_mlp_hidden_layer_sizes, num_biquads, fir_length, model_optimizer)
+    if model_train == "MODEL2":
+        model = MODEL2(
+            glu_mlp_hidden_layer_sizes, fc_layer_size, num_biquads, fir_length, model_optimizer
         )
+
+    # initialize checkpoints
+    checkpoint = tf.train.Checkpoint(optimizer=model_optimizer,
+                                     model=model)
+    chkpt_manager = tf.train.CheckpointManager(checkpoint, "results/" + directory + "./tf_ckpts", max_to_keep=1)
+    if retrain:
+        chkpt_manager.restore_or_initialize()
         # reset the learning rate to the initial value
         model_optimizer.learning_rate.assign(learning_rate)
+        model.optimizer = model_optimizer
 
     # callbacks
     callbacks = None
@@ -238,11 +241,8 @@ def main(
             callback_log["val_loss"] = val_loss  # update callback log
             if val_loss < best_loss:
                 best_loss = val_loss
-                model.save_weights("results/" + directory + "/model_weigths.h5")
-                model.save("results/" + directory + "/model.h5")
-                model_optimizer.save_weights(
-                    "results/" + directory + "/model_optimizer_weigths.h5"
-                )
+                chkpt_manager.save()
+                tf.saved_model.save(model, "results/" + directory + "/saved_model")
                 print("-- New best val loss")
             print(f"-- Train Loss {train_loss:.3E} Val Loss {val_loss:.3E}")
         else:
@@ -257,10 +257,10 @@ def main(
 
         if callbacks:
             callbacks.on_epoch_end(epoch, logs=callback_log)
-        # TODO: delete this?
-        ## check if early stopping has triggered stop_training
-        # if model.stop_training:
-        #    break
+            model_optimizer.learning_rate.assign(model.optimizer.learning_rate)  # refresh the lr of model_optimizer
+        # check if early stopping has triggered stop_training
+        if model.stop_training:
+            break
 
     if callbacks:
         callbacks.on_train_end(logs=callback_log)
@@ -269,8 +269,8 @@ def main(
     print(f"Total time elapsed: {time.time() - start:3.1f}s")
 
     # save final model for retrain
-    model.save_weights("results/" + directory + "/model_final.h5")
-    model_optimizer.save_weights("results/" + directory + "/model_optimizer_final.h5")
+    chkpt_manager.save()
+    tf.saved_model.save(model, "results/" + directory + "/saved_model_final")
 
 
 def train_loop(
