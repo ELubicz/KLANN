@@ -1,6 +1,6 @@
 import math
 import tensorflow as tf
-import numpy as np
+import concurrent.futures
 
 
 class GLU(tf.keras.layers.Layer):
@@ -44,7 +44,6 @@ class DSVF(tf.Module):
         self.n = N
         self.nfft = 2 ** math.ceil(math.log2(2 * self.n - 1))
 
-    # @tf.function
     def lfilter(self, b, a, x):
         """
         IIR filter
@@ -54,12 +53,11 @@ class DSVF(tf.Module):
         b = b / a[0]
         y_tf = [None] * x.shape[0]
 
-        for batch in range(x.shape[0]):
+        def process_batch(batch, x, b, a):
             zx = [0, 0]
             zy = [0, 0]
             x_batch = x[batch, :]
             y_tf_batch = [None] * len(x_batch)
-
             # pylint: disable=consider-using-enumerate
             for i in range(len(x_batch)):
                 y = (
@@ -72,8 +70,15 @@ class DSVF(tf.Module):
                 zx = [x_batch[i], zx[0]]
                 zy = [y, zy[0]]
                 y_tf_batch[i] = y
-            y_tf[batch] = tf.stack(y_tf_batch)
+            return tf.stack(y_tf_batch)
 
+        y_tf = [None] * x.shape[0]
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for batch in range(x.shape[0]):
+                futures.append(executor.submit(process_batch, batch, x, b, a))
+            for batch, future in enumerate(futures):
+                y_tf[batch] = future.result()
         return tf.stack(y_tf)
 
     def call(self, x, training=None):
@@ -111,7 +116,6 @@ class DSVF(tf.Module):
 
         else:
             return self.lfilter(b, a, x)
-
 
 # pylint: disable=W0223
 class MODEL1(tf.Module):
