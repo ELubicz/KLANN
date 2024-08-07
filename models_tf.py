@@ -30,18 +30,18 @@ class GLU(tf.keras.layers.Layer):
 
 
 # pylint: disable=W0223
-class DSVF(tf.Module):
+class DSVF(tf.keras.layers.Layer):
     """The DSVF module for TFLite"""
 
-    def __init__(self, N, name=None):
-        super().__init__(name)
+    def __init__(self, fir_length, **kwargs):
+        super().__init__(**kwargs)
         # define the filter parameters
         self.g = tf.Variable([0.0], trainable=True)
         self.r = tf.Variable([0.0], trainable=True)
         self.m_hp = tf.Variable([1.0], trainable=True)
         self.m_bp = tf.Variable([1.0], trainable=True)
         self.m_lp = tf.Variable([1.0], trainable=True)
-        self.n = N
+        self.n = fir_length
         self.nfft = 2 ** math.ceil(math.log2(2 * self.n - 1))
 
     def lfilter(self, b, a, x):
@@ -52,12 +52,11 @@ class DSVF(tf.Module):
         a = a / a[0]
         b = b / a[0]
         y_tf = [None] * x.shape[0]
-
-        def process_batch(batch, x, b, a):
-            zx = [0, 0]
-            zy = [0, 0]
+        y_tf_batch = [None] * x.shape[1]
+        zx = [0, 0]
+        zy = [0, 0]
+        for batch in range(x.shape[0]):
             x_batch = x[batch, :]
-            y_tf_batch = [None] * len(x_batch)
             # pylint: disable=consider-using-enumerate
             for i in range(len(x_batch)):
                 y = (
@@ -70,15 +69,8 @@ class DSVF(tf.Module):
                 zx = [x_batch[i], zx[0]]
                 zy = [y, zy[0]]
                 y_tf_batch[i] = y
-            return tf.stack(y_tf_batch)
+            y_tf[batch] = tf.stack(y_tf_batch)
 
-        y_tf = [None] * x.shape[0]
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = []
-            for batch in range(x.shape[0]):
-                futures.append(executor.submit(process_batch, batch, x, b, a))
-            for batch, future in enumerate(futures):
-                y_tf[batch] = future.result()
         return tf.stack(y_tf)
 
     def call(self, x, training=None):
@@ -118,26 +110,26 @@ class DSVF(tf.Module):
             return self.lfilter(b, a, x)
 
 # pylint: disable=W0223
-class MODEL1(tf.Module):
+class MODEL1(tf.keras.Model):
     """
     DSVFs in parallel
     """
 
-    def __init__(self, layers, n, N, optimizer, name=None):
-        super().__init__(name)
-        self.n = n
+    def __init__(self, layers, num_biquads, fir_length, optimizer, **kwargs):
+        super().__init__(**kwargs)
+        self.num_biquads = num_biquads
         self.optimizer = optimizer  # needed by ReduceLROnPlateau callback
         self.stop_training = False  # needed by EarlyStopping callback
         mlp1 = []
         mlp1.append(GLU(2 * layers[0]))
         for i in range(1, len(layers)):
             mlp1.append(GLU(2 * layers[i]))
-        mlp1.append(tf.keras.layers.Dense(n))
+        mlp1.append(tf.keras.layers.Dense(num_biquads))
         self.mlp1 = tf.keras.Sequential(mlp1)
 
         self.filters = []
-        for _ in range(self.n):
-            self.filters.append(DSVF(N))
+        for _ in range(self.num_biquads):
+            self.filters.append(DSVF(fir_length))
 
         layers.reverse()
         mlp2 = []
@@ -153,7 +145,7 @@ class MODEL1(tf.Module):
         """
         z = self.mlp1(x)
         y = []
-        for i in range(self.n):
+        for i in range(self.num_biquads):
             y_filt = self.filters[i].call(z[:, :, i], training=training)
             # expand dimension
             y_filt = tf.expand_dims(y_filt, axis=-1)
