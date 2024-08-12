@@ -19,12 +19,13 @@ class GLU(tf.keras.layers.Layer):
         """
         The call
         """
-        x = self.dense(x)
-        x_sigmoid = self.dense_sigmoid(x)
-        return x * tf.nn.sigmoid(x_sigmoid)
+        x_dense = self.dense(x)
+        x_dense_sigmoid = self.dense_sigmoid.call(x)
+        return x_dense * tf.nn.sigmoid(x_dense_sigmoid)
 
     def build(self, input_shape):
         self.dense.build(input_shape)
+        self.dense_sigmoid.build(input_shape)
         super().build(input_shape)
 
 
