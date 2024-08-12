@@ -63,7 +63,6 @@ class DSVF(tf.keras.layers.Layer):
                 - a[1] * zy[:, 0]
                 - a[2] * zy[:, 1]
             )
-            # TODO: fx below
             zx = tf.concat(
                 (tf.expand_dims(x_samples, 1), tf.slice(zx, [0, 0], [x.shape[0], 1])),
                 axis=1,

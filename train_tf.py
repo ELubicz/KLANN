@@ -8,6 +8,7 @@ from preprocess_tf import PreProcess
 from tensorflow.summary import create_file_writer
 from tensorflow.keras.callbacks import CallbackList, ReduceLROnPlateau, EarlyStopping
 from models_tf import MODEL2, MODEL1
+from tqdm import tqdm
 
 
 def main(
@@ -31,8 +32,10 @@ def main(
     # neural network architecture:
     # GLU MLP - biquad filters - GLU MLP
 
-    device = tf.device("cuda" if tf.config.list_physical_devices("GPU") else "cpu")
-    print("using", device)
+    device = "GPU" if tf.config.list_physical_devices("GPU") else "CPU"
+    print("Using", device)
+    # Uncomment below for debugging the tensor placements
+    #tf.debugging.set_log_device_placement(True)
 
     # MODIFIABLE
     # ------------------------------------------------
@@ -185,21 +188,18 @@ def main(
     if callbacks:
         callbacks.on_train_begin(logs=callback_log)
 
-    print("Starting training")
-
     if retrain:
-        with device:
-            best_loss, callback_log = val_loop(
-                model,
-                val_dataset,
-                mr_stft,
-                loss_func,
-                loss_func2,
-                alpha,
-                trunc_length,
-                callbacks.callbacks,
-                callback_log,
-            )
+        best_loss, callback_log = val_loop(
+            model,
+            val_dataset,
+            mr_stft,
+            loss_func,
+            loss_func2,
+            alpha,
+            trunc_length,
+            callbacks.callbacks,
+            callback_log,
+        )
     else:
         best_loss = float("inf")
 
@@ -210,34 +210,34 @@ def main(
         if callbacks:
             callbacks.on_epoch_begin(epoch, logs=callback_log)
         # train for one epoch
-        with device:
-            train_loss, callback_log = train_loop(
+        print("Training...")
+        train_loss, callback_log = train_loop(
+            model,
+            train_dataset,
+            mr_stft,
+            loss_func,
+            loss_func2,
+            alpha,
+            trunc_length,
+            model_optimizer,
+            callbacks,
+            callback_log,
+        )
+
+        # validation
+        if epoch % 2 == 0:
+            print("Validation...")
+            val_loss, callback_log = val_loop(
                 model,
-                train_dataset,
+                val_dataset,
                 mr_stft,
                 loss_func,
                 loss_func2,
                 alpha,
                 trunc_length,
-                model_optimizer,
                 callbacks,
                 callback_log,
             )
-
-        # validation
-        if epoch % 2 == 0:
-            with device:
-                val_loss, callback_log = val_loop(
-                    model,
-                    val_dataset,
-                    mr_stft,
-                    loss_func,
-                    loss_func2,
-                    alpha,
-                    trunc_length,
-                    callbacks,
-                    callback_log,
-                )
             callback_log["val_loss"] = val_loss  # update callback log
             if val_loss < best_loss:
                 best_loss = val_loss
@@ -288,7 +288,7 @@ def train_loop(
     """Train loop for one epoch"""
     train_loss = 0
     batch = 0
-    for x, y in dataset:
+    for x, y in tqdm(dataset):
         if callbacks:
             callbacks.on_batch_begin(batch, logs=callback_log)
             callbacks.on_train_batch_begin(batch, logs=callback_log)
@@ -342,7 +342,7 @@ def val_loop(
     """Validation loop for one epoch"""
     val_loss = 0
     batch = 0
-    for x, y in dataset:
+    for x, y in tqdm(dataset):
         if callbacks:
             callbacks.on_batch_begin(batch, logs=callback_log)
             callbacks.on_test_batch_begin(batch, logs=callback_log)
