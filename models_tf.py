@@ -1,6 +1,5 @@
 import math
 import tensorflow as tf
-import concurrent.futures
 
 
 class GLU(tf.keras.layers.Layer):
@@ -51,27 +50,29 @@ class DSVF(tf.keras.layers.Layer):
         # normalize filter coeffs
         a = a / a[0]
         b = b / a[0]
-        y_tf = [None] * x.shape[0]
-        y_tf_batch = [None] * x.shape[1]
-        zx = [0, 0]
-        zy = [0, 0]
-        for batch in range(x.shape[0]):
-            x_batch = x[batch, :]
+        y = [None] * x.shape[1]
+        zx = tf.zeros((x.shape[0], 2), dtype=tf.float32)
+        zy = tf.zeros((x.shape[0], 2), dtype=tf.float32)
+        for i in range(x.shape[1]):
+            x_samples = x[:, i]
             # pylint: disable=consider-using-enumerate
-            for i in range(len(x_batch)):
-                y = (
-                    b[0] * x_batch[i]
-                    + b[1] * zx[0]
-                    + b[2] * zx[1]
-                    - a[1] * zy[0]
-                    - a[2] * zy[1]
-                )
-                zx = [x_batch[i], zx[0]]
-                zy = [y, zy[0]]
-                y_tf_batch[i] = y
-            y_tf[batch] = tf.stack(y_tf_batch)
+            y[i] = (
+                b[0] * x_samples
+                + b[1] * zx[:, 0]
+                + b[2] * zx[:, 1]
+                - a[1] * zy[:, 0]
+                - a[2] * zy[:, 1]
+            )
+            # TODO: fx below
+            zx = tf.concat(
+                (tf.expand_dims(x_samples, 1), tf.slice(zx, [0, 0], [x.shape[0], 1])),
+                axis=1,
+            )
+            zy = tf.concat(
+                (tf.expand_dims(y[i], 1), tf.slice(zy, [0, 0], [x.shape[0], 1])), axis=1
+            )
 
-        return tf.stack(y_tf)
+        return tf.stack(y, axis=1)
 
     def call(self, x, training=None):
         """
@@ -108,6 +109,7 @@ class DSVF(tf.keras.layers.Layer):
 
         else:
             return self.lfilter(b, a, x)
+
 
 # pylint: disable=W0223
 class MODEL1(tf.keras.Model):
