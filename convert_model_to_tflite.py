@@ -7,7 +7,7 @@ from models import MODEL2, MODEL1
 # MODIFIABLE
 # ------------------------------------------------
 # select model to evaluate (directory name)
-directory = "facebender-rndamp_small_MODEL1"
+directory = "exciter-thick-and-fuzzy_small_MODEL1"
 # ------------------------------------------------
 
 
@@ -34,7 +34,7 @@ model.load_state_dict(torch.load("results/" + directory + "/model.pth"))
 
 # get sample input
 test_input, fs = torchaudio.load("data/test/" + data + "-input.wav")
-sample_input = (test_input.view(1, -1, 1))
+sample_input = (test_input.view(1, -1, 1),)
 
 # convert model to Edge
 edge_model = ai_edge_torch.convert(model.eval(), sample_input)

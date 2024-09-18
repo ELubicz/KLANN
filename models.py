@@ -4,6 +4,15 @@ from torch import nn
 from torchaudio import functional
 import numpy as np
 
+
+@torch.library.custom_op("mylib::custom_lfilter", mutates_args=())
+def custom_lfilter(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, clamp: bool) -> torch.Tensor:
+    return functional.lfilter(x, a, b, clamp=clamp)
+
+@custom_lfilter.register_fake
+def _(x, a, b, clamp):
+    return x.new_empty(x.shape)
+
 # state variable filter (SVF) trained in frequency domain and inferred in time domain
 class DSVF(nn.Module):
     def __init__(self, N):
@@ -53,7 +62,8 @@ class DSVF(nn.Module):
 
         # filter in time domain
         else:
-            return functional.lfilter(x, a, b, clamp = False)
+            #return functional.lfilter(x, a, b, clamp = False)
+            return custom_lfilter(x, a, b, False)
 
 # DSVFs in parallel
 class MODEL1(nn.Module):
