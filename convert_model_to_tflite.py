@@ -35,11 +35,11 @@ if params[0] == "MODEL1":
     model = MODEL1(layers, n, int(params[4]))
 else:
     model = MODEL2(layers, layer, n, int(params[4]))
-model.load_state_dict(torch.load("results/" + directory + "/model.pth", map_location=torch.device('cpu')))
+model.load_state_dict(torch.load("results/" + directory + "/model.pth"))
 
 # get sample input
 test_input, fs = torchaudio.load("data/test/" + data + "-input.wav")
-print("Preprocessing audio (val)")
+print("Preprocessing audio")
 start = time.time()
 test_dataset = PreProcess(
     test_input.float(), test_input.float(), seq_length, trunc_length, batch_size
@@ -51,7 +51,10 @@ sample_input = (test_x[random_idx].view(1, -1, 1),)
 #sample_input = (test_input.view(1, -1, 1),)
 
 # convert model to Edge
+print("converting model to TFlite")
+start = time.time()
 edge_model = ai_edge_torch.convert(model.eval(), sample_input)
+print(f"Time elapsed: {time.time() - start:3.1f}s")
 
 # validate converted model
 model.eval()
