@@ -16,12 +16,12 @@ directory = "exciter-thick-and-fuzzy_small_MODEL1"
 params = []
 file = open("results/" + directory + "/parameters.txt", "r")
 for i, line in enumerate(file.readlines()):
-    if i <= 5:
-        tmp = line.split()
-        if i == 0:
-            data = tmp[-1]
-        else:
-            params.append(tmp[-1])
+#    if i <= 5:
+    tmp = line.split()
+    if i == 0:
+        data = tmp[-1]
+    else:
+        params.append(tmp[-1])
 file.close()
 print("Model: " + directory)
 
@@ -35,7 +35,7 @@ if params[0] == "MODEL1":
     model = MODEL1(layers, n, int(params[4]))
 else:
     model = MODEL2(layers, layer, n, int(params[4]))
-model.load_state_dict(torch.load("results/" + directory + "/model.pth"))
+model.load_state_dict(torch.load("results/" + directory + "/model.pth", map_location=torch.device('cpu')))
 
 # get sample input
 test_input, fs = torchaudio.load("data/test/" + data + "-input.wav")
@@ -47,7 +47,7 @@ test_dataset = PreProcess(
 print(f"Time elapsed: {time.time() - start:3.1f}s")
 test_x, _ = next(iter(test_dataset))
 random_idx = np.random.randint(0, test_x.shape[0])
-sample_input = (test_x[random_idx],)
+sample_input = (test_x[random_idx].view(1, -1, 1),)
 #sample_input = (test_input.view(1, -1, 1),)
 
 # convert model to Edge
