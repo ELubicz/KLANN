@@ -1,8 +1,10 @@
 import torch
 import torchaudio
 import ai_edge_torch
+import time
 import numpy as np
 from models import MODEL2, MODEL1
+from preprocess import PreProcess
 
 # MODIFIABLE
 # ------------------------------------------------
@@ -23,6 +25,9 @@ for i, line in enumerate(file.readlines()):
 file.close()
 print("Model: " + directory)
 
+seq_length = int(params[5])
+trunc_length = int(params[6])
+batch_size = int(params[7])
 layers = [int(i) for i in params[1].strip("[]").split(",")]
 layer = int(params[2])
 n = int(params[3])
@@ -34,7 +39,16 @@ model.load_state_dict(torch.load("results/" + directory + "/model.pth"))
 
 # get sample input
 test_input, fs = torchaudio.load("data/test/" + data + "-input.wav")
-sample_input = (test_input.view(1, -1, 1),)
+print("Preprocessing audio (val)")
+start = time.time()
+test_dataset = PreProcess(
+    test_input.float(), test_input.float(), seq_length, trunc_length, batch_size
+)
+print(f"Time elapsed: {time.time() - start:3.1f}s")
+test_x, _ = next(iter(test_dataset))
+random_idx = np.random.randint(0, test_x.shape[0])
+sample_input = (test_x[random_idx],)
+#sample_input = (test_input.view(1, -1, 1),)
 
 # convert model to Edge
 edge_model = ai_edge_torch.convert(model.eval(), sample_input)
