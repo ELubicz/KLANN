@@ -13,4 +13,4 @@ dist/
 build/
 
 .venv/
-/.venv_lx
+.venv_lx/

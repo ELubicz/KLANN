@@ -1,3 +1,9 @@
+import os
+# Check if running on Linux, as ai_edge_torch is only supported on Linux
+if os.name != 'posix':
+    print("This script is intended to be run on Linux")
+    exit()
+
 import torch
 import torchaudio
 import ai_edge_torch
@@ -9,20 +15,20 @@ from preprocess import PreProcess
 # MODIFIABLE
 # ------------------------------------------------
 # select model to evaluate (directory name)
-directory = "exciter-thick-and-fuzzy_small_MODEL1"
+# directory = "exciter-thick-and-fuzzy_small_MODEL1"
+directory = "facebender-rndamp_small_MODEL1"
 # ------------------------------------------------
 
+CURRENT_PATH = os.path.abspath(os.path.dirname(__file__))
 
 params = []
-file = open("results/" + directory + "/parameters.txt", "r")
-for i, line in enumerate(file.readlines()):
-#    if i <= 5:
-    tmp = line.split()
-    if i == 0:
-        data = tmp[-1]
-    else:
-        params.append(tmp[-1])
-file.close()
+with open(CURRENT_PATH + "/results/" + directory + "/parameters.txt", "r") as file:
+    for i, line in enumerate(file.readlines()):
+        tmp = line.split()
+        if i == 0:
+            data = tmp[-1]
+        else:
+            params.append(tmp[-1])
 print("Model: " + directory)
 
 seq_length = int(params[5])
@@ -35,10 +41,18 @@ if params[0] == "MODEL1":
     model = MODEL1(layers, n, int(params[4]))
 else:
     model = MODEL2(layers, layer, n, int(params[4]))
-model.load_state_dict(torch.load("results/" + directory + "/model.pth"))
+# select proper device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.load_state_dict(torch.load(CURRENT_PATH + "/results/" +
+                      directory + "/model.pth", map_location=device))
+# save torch model structure if it does not exist
+model_path = CURRENT_PATH + "/results/" + directory + "/model.pt"
+if not os.path.exists(model_path):
+    torch.save(model, model_path)
 
 # get sample input
-test_input, fs = torchaudio.load("data/test/" + data + "-input.wav")
+test_input, fs = torchaudio.load(
+    CURRENT_PATH + "/data/test/" + data + "-input.wav")
 print("Preprocessing audio")
 start = time.time()
 test_dataset = PreProcess(
@@ -48,7 +62,7 @@ print(f"Time elapsed: {time.time() - start:3.1f}s")
 test_x, _ = next(iter(test_dataset))
 random_idx = np.random.randint(0, test_x.shape[0])
 sample_input = (test_x[random_idx].view(1, -1, 1),)
-#sample_input = (test_input.view(1, -1, 1),)
+# sample_input = (test_input.view(1, -1, 1),)
 
 # convert model to Edge
 print("converting model to TFlite")
@@ -68,7 +82,7 @@ if (np.allclose(
 )):
     print("Inference result with Pytorch and TfLite was within tolerance")
 else:
-    print("Something wrong with Pytorch --> TfLite")
+    print("Output of the TFLite conversion doesn't match Pytorch's'")
 
 # save converted model
 edge_model.export("results/" + directory + "/tflite_model.tflite")
