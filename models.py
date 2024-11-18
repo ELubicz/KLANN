@@ -2,21 +2,13 @@ import math
 import torch
 from torch import nn
 from torchaudio import functional
-import numpy as np
 
-
-@torch.library.custom_op("mylib::custom_lfilter", mutates_args=())
-def custom_lfilter(x: torch.Tensor, a: torch.Tensor, b: torch.Tensor, clamp: bool) -> torch.Tensor:
-    return functional.lfilter(x, a, b, clamp=clamp)
-
-@custom_lfilter.register_fake
-def _(x, a, b, clamp):
-    return x.new_empty(x.shape)
 
 # state variable filter (SVF) trained in frequency domain and inferred in time domain
 class DSVF(nn.Module):
-    def __init__(self, N):
+    def __init__(self, N, impl="default"):
         super().__init__()
+        self.impl = impl
         # filter parameters
         self.g = nn.Parameter(torch.zeros(1))
         self.R = nn.Parameter(torch.zeros(1))
@@ -62,12 +54,49 @@ class DSVF(nn.Module):
 
         # filter in time domain
         else:
-            #return functional.lfilter(x, a, b, clamp = False)
-            return custom_lfilter(x, a, b, False)
+            with torch.no_grad():
+                if self.impl == "default":
+                    return functional.lfilter(x, a, b, clamp = False)
+                elif self.impl == "custom":
+                    # Here we have the pure Python implementation of the lfilter function
+                    # as per the implementation in torchaudio.functional.filtering.
+                    # see _lfilter_core_generic_loop() and _lfilter_core
+                    a_coeffs = a.unsqueeze(0)
+                    b_coeffs = b.unsqueeze(0)
+                    shape = x.size()
+                    x = x.reshape(-1, a_coeffs.shape[0], shape[-1])
+                    #output = _lfilter(waveform, a_coeffs, b_coeffs)
+                    n_batch, n_channel, n_sample = x.size()
+                    n_order = a_coeffs.size(1)
+                    padded_waveform = torch.nn.functional.pad(x, [n_order - 1, 0])
+                    padded_output_waveform = torch.zeros_like(padded_waveform)
+
+                    # Set up the coefficients matrix
+                    # Flip coefficients' order
+                    a_coeffs_flipped = a_coeffs.flip(1)
+                    b_coeffs_flipped = b_coeffs.flip(1)
+
+                    # calculate windowed_input_signal in parallel using convolution
+                    input_signal_windows = torch.nn.functional.conv1d(padded_waveform, b_coeffs_flipped.unsqueeze(1), groups=n_channel)
+
+                    input_signal_windows.div_(a_coeffs[:, :1])
+                    a_coeffs_flipped.div_(a_coeffs[:, :1])
+
+                    #_lfilter_core_generic_loop(input_signal_windows, a_coeffs_flipped, padded_output_waveform)
+                    n_order = a_coeffs_flipped.size(1)
+                    a_coeffs_flipped = a_coeffs_flipped.unsqueeze(2)
+                    for i_sample, o0 in enumerate(input_signal_windows.permute(2, 0, 1)):
+                        windowed_output_signal = padded_output_waveform[:, :, i_sample : i_sample + n_order]
+                        o0 -= (windowed_output_signal.transpose(0, 1) @ a_coeffs_flipped)[..., 0].t()
+                        padded_output_waveform[:, :, i_sample + n_order - 1] = o0
+
+                    output = padded_output_waveform[:, :, n_order - 1 :]
+                    # unpack batch
+                    return output.reshape(shape[:-1] + output.shape[-1:])
 
 # DSVFs in parallel
 class MODEL1(nn.Module):
-    def __init__(self, layers, n, N):
+    def __init__(self, layers, n, N, impl="default"):
         super().__init__()
         self.n = n
         mlp1 = []
@@ -81,16 +110,17 @@ class MODEL1(nn.Module):
 
         self.filters =  nn.ModuleList([])
         for _ in range(self.n):
-            self.filters.append(DSVF(N))
+            self.filters.append(DSVF(N, impl))
 
-        layers.reverse()
+        reverse_layers = list(layers)
+        reverse_layers.reverse()
         mlp2 = []
-        mlp2.append(nn.Linear(n, 2*layers[0]))
+        mlp2.append(nn.Linear(n, 2*reverse_layers[0]))
         mlp2.append(nn.GLU())
-        for i in range(1, len(layers)):
-            mlp2.append(nn.Linear(layers[i-1], 2*layers[i]))
+        for i in range(1, len(reverse_layers)):
+            mlp2.append(nn.Linear(reverse_layers[i-1], 2*reverse_layers[i]))
             mlp2.append(nn.GLU())
-        mlp2.append(nn.Linear(layers[-1], 1))
+        mlp2.append(nn.Linear(reverse_layers[-1], 1))
         self.mlp2 = nn.Sequential(*mlp2)
 
     def forward(self, x):
@@ -102,7 +132,7 @@ class MODEL1(nn.Module):
 
 # DSVFs in parallel and series
 class MODEL2(nn.Module):
-    def __init__(self, layers, layer, n, N):
+    def __init__(self, layers, layer, n, N, impl="default"):
         super().__init__()
         self.n = n
         mlp1 = []
@@ -121,28 +151,73 @@ class MODEL2(nn.Module):
                 nn.GLU(),
                 nn.Linear(layer, 1)
             ))
-        self.filter =  nn.ModuleList([])
+        self.filters =  nn.ModuleList([])
         for _ in range(self.n):
-            self.filter.append(DSVF(N = N))
+            self.filters.append(DSVF(N, impl))
 
-        layers.reverse()
+        reverse_layers = list(layers)
+        reverse_layers.reverse()
         mlp2 = []
-        mlp2.append(nn.Linear(n, 2*layers[0]))
+        mlp2.append(nn.Linear(n, 2*reverse_layers[0]))
         mlp2.append(nn.GLU())
-        for i in range(1, len(layers)):
-            mlp2.append(nn.Linear(layers[i-1], 2*layers[i]))
+        for i in range(1, len(reverse_layers)):
+            mlp2.append(nn.Linear(reverse_layers[i-1], 2*reverse_layers[i]))
             mlp2.append(nn.GLU())
-        mlp2.append(nn.Linear(layers[-1], 1))
+        mlp2.append(nn.Linear(reverse_layers[-1], 1))
         self.mlp2 = nn.Sequential(*mlp2)
 
     # x -> (batch_size, samples, input_size)
     def forward(self, x):
         y = self.mlp1(x)
-        z = self.filter[0](y[:,:,0]).unsqueeze(-1)
+        z = self.filters[0](y[:,:,0]).unsqueeze(-1)
         z_s = []
         z_s.append(z)
         for i in range(self.n-1):
-            z = self.filter[i+1](self.linear[i](torch.cat((z, y[:,:,i+1].unsqueeze(-1)), dim=-1)).squeeze(-1)).unsqueeze(-1)
+            z = self.filters[i+1](self.linear[i](torch.cat((z, y[:,:,i+1].unsqueeze(-1)), dim=-1)).squeeze(-1)).unsqueeze(-1)
             z_s.append(z)
         return self.mlp2(torch.cat(z_s, dim=-1))
     # return -> (batch_size, samples, input_size)
+
+class MODEL_MLP1(nn.Module):
+    '''
+    Intermediate layer containing only the encoder
+    Currently only used for the conversion to tflite
+    '''
+    def __init__(self, layers, n):
+        super().__init__()
+        self.n = n
+        mlp1 = []
+        mlp1.append(nn.Linear(1, 2*layers[0]))
+        mlp1.append(nn.GLU())
+        for i in range(1, len(layers)):
+            mlp1.append(nn.Linear(layers[i-1], 2*layers[i]))
+            mlp1.append(nn.GLU())
+        mlp1.append(nn.Linear(layers[-1], n))
+        self.mlp1 = nn.Sequential(*mlp1)
+
+    def forward(self, x):
+        return self.mlp1(x)
+
+class MODEL_MLP2(nn.Module):
+    '''
+    Intermediate layer containing only the decoder
+    Currently only used for the conversion to tflite
+    '''
+    def __init__(self, layers, n):
+        super().__init__()
+        self.n = n
+
+        reverse_layers = list(layers)
+        reverse_layers.reverse()
+        mlp2 = []
+        mlp2.append(nn.Linear(n, 2*reverse_layers[0]))
+        mlp2.append(nn.GLU())
+        for i in range(1, len(reverse_layers)):
+            mlp2.append(nn.Linear(reverse_layers[i-1], 2*reverse_layers[i]))
+            mlp2.append(nn.GLU())
+        mlp2.append(nn.Linear(reverse_layers[-1], 1))
+        self.mlp2 = nn.Sequential(*mlp2)
+
+    # x -> (batch_size, samples, input_size)
+    def forward(self, x):
+        return self.mlp2(x)
