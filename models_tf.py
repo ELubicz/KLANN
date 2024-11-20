@@ -54,31 +54,31 @@ class DSVF(keras.layers.Layer):
         self.n = fir_length
         self.nfft = 2 ** math.ceil(math.log2(2 * self.n - 1))
         self.g = self.add_weight(
-            "g",
+            name="g",
             shape=(1,),
             initializer="zeros",
             trainable=True,
         )
         self.r = self.add_weight(
-            "r",
+            name="r",
             shape=(1,),
             initializer="zeros",
             trainable=True,
         )
         self.m_hp = self.add_weight(
-            "m_hp",
+            name="m_hp",
             shape=(1,),
             initializer="ones",
             trainable=True,
         )
         self.m_bp = self.add_weight(
-            "m_bp",
+            name="m_bp",
             shape=(1,),
             initializer="ones",
             trainable=True,
         )
         self.m_lp = self.add_weight(
-            "m_lp",
+            name="m_lp",
             shape=(1,),
             initializer="ones",
             trainable=True,
