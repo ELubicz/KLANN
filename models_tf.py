@@ -1,5 +1,9 @@
 import math
 import tensorflow as tf
+import keras
+from scipy import signal
+
+# pylint: disable=W0223
 
 
 class GLU(tf.keras.layers.Layer):
@@ -17,26 +21,81 @@ class GLU(tf.keras.layers.Layer):
         first_half, second_half = tf.split(x, 2, axis=-1)
         return first_half * tf.nn.sigmoid(second_half)
 
-    def build(self, input_shape):
-        super().build(input_shape)
+
+@tf.numpy_function(Tout=tf.float32, name="Lfilter")
+def np_lfilter(b, a, x, zi=None):
+    y, zf = signal.lfilter(b, a, x, zi)
+    # TODO: found a way to return both y and zf instead of
+    # having to concatenate them in an tuple
+    return (y, zf)
 
 
-# pylint: disable=W0223
-class DSVF(tf.keras.layers.Layer):
+@tf.function(input_signature=[
+    tf.TensorSpec(shape=[None], dtype=tf.float32, name='b'),
+    tf.TensorSpec(shape=[None], dtype=tf.float32, name='a'),
+    tf.TensorSpec(shape=[None, None], dtype=tf.float32, name='x'),
+    # tf.TensorSpec(shape=[None, 2], name='zi')
+])
+def tf_lfilter(b, a, x, zi=None):
+    '''
+    TODO: output zf
+    '''
+    y_zf = np_lfilter(b, a, x)
+    return y_zf[0]
+
+
+@keras.saving.register_keras_serializable()
+class DSVF(keras.layers.Layer):
     """The DSVF module for TFLite"""
 
     def __init__(self, fir_length, **kwargs):
         super().__init__(**kwargs)
         # define the filter parameters
-        self.g = tf.Variable([0.0], trainable=True)
-        self.r = tf.Variable([0.0], trainable=True)
-        self.m_hp = tf.Variable([1.0], trainable=True)
-        self.m_bp = tf.Variable([1.0], trainable=True)
-        self.m_lp = tf.Variable([1.0], trainable=True)
         self.n = fir_length
         self.nfft = 2 ** math.ceil(math.log2(2 * self.n - 1))
+        self.g = self.add_weight(
+            "g",
+            shape=(1,),
+            initializer="zeros",
+            trainable=True,
+        )
+        self.r = self.add_weight(
+            "r",
+            shape=(1,),
+            initializer="zeros",
+            trainable=True,
+        )
+        self.m_hp = self.add_weight(
+            "m_hp",
+            shape=(1,),
+            initializer="ones",
+            trainable=True,
+        )
+        self.m_bp = self.add_weight(
+            "m_bp",
+            shape=(1,),
+            initializer="ones",
+            trainable=True,
+        )
+        self.m_lp = self.add_weight(
+            "m_lp",
+            shape=(1,),
+            initializer="ones",
+            trainable=True,
+        )
 
-    def lfilter(self, b, a, x):
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "g": self.g.numpy(),
+            "r": self.r.numpy(),
+            "m_hp": self.m_hp.numpy(),
+            "m_bp": self.m_bp.numpy(),
+            "m_lp": self.m_lp.numpy(),
+        })
+        return config
+
+    def lfilter_custom(self, b, a, x):
         """
         IIR filter
         """
@@ -102,10 +161,18 @@ class DSVF(tf.keras.layers.Layer):
                 return tf.reshape(first_part + overlap_ext, (-1, self.n))
 
         else:
-            return self.lfilter(b, a, x)
+            y = tf_lfilter(b, a, x)
+            # For some reason, y comes out with unknown shape
+            # Hence we need to set the shape manually
+            # See https://stackoverflow.com/questions/75110247/keras-custom-layer-unknown-output-shape
+            y.set_shape(x.shape)
+            return y
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
 
 
-# pylint: disable=W0223
+@keras.saving.register_keras_serializable()
 class MODEL1(tf.keras.Model):
     """
     DSVFs in parallel
@@ -140,6 +207,13 @@ class MODEL1(tf.keras.Model):
         mlp2.append(tf.keras.layers.Dense(1))
         self.mlp2 = tf.keras.Sequential(mlp2)
 
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "num_biquads": self.num_biquads,
+        })
+        return config
+
     def call(self, x, training=None):
         """
         The call function
@@ -153,11 +227,18 @@ class MODEL1(tf.keras.Model):
             y.append(y_filt)
         return self.mlp2(tf.concat(y, axis=-1))
 
+    def get_model(self):
+        """
+        This is just a hack to allow model visualization in Neutron
+        """
+        return tf.keras.Sequential(self.layers)
 
-# pylint: disable=W0223
-class MODEL2(tf.Module):
+
+@keras.saving.register_keras_serializable()
+class MODEL2(tf.keras.Model):
     """
     DSVFs in parallel and series
+    TODO: create a base class for MODEL1 and MODEL2
     """
 
     def __init__(self, layers, layer, n, N, optimizer, name=None):
@@ -189,12 +270,13 @@ class MODEL2(tf.Module):
         for _ in range(self.n):
             self.filter.append(DSVF(N))
 
-        layers.reverse()
+        reverse_layers = layers.copy()
+        reverse_layers.reverse()
         mlp2 = []
-        mlp2.append(tf.keras.layers.Dense(2 * layers[0]))
+        mlp2.append(tf.keras.layers.Dense(2 * reverse_layers[0]))
         mlp2.append(GLU())
-        for i in range(1, len(layers)):
-            mlp2.append(tf.keras.layers.Dense(2 * layers[i]))
+        for i in range(1, len(reverse_layers)):
+            mlp2.append(tf.keras.layers.Dense(2 * reverse_layers[i]))
             mlp2.append(GLU())
         mlp2.append(tf.keras.layers.Dense(1))
         self.mlp2 = tf.keras.Sequential(mlp2)
@@ -219,7 +301,11 @@ class MODEL2(tf.Module):
             z_s.append(z)
         return self.mlp2(tf.concat(z_s, axis=-1))
 
-    # return -> (batch_size, samples, input_size)
+    def get_model(self):
+        """
+        This is just a hack to allow model visualization in Neutron
+        """
+        return keras.Sequential(self.layers)
 
 
 if __name__ == "__main__":
@@ -232,7 +318,8 @@ if __name__ == "__main__":
     input_shape = (None, 32, 1)
     model.build(input_shape)
     # save keras model
-    model.save(os.path.join(CURR_DIR, "model1.keras"))
+    model.get_model().save(os.path.join(CURR_DIR, "model1.keras"))
+
     # save tflite model with batch size 1
     tf_callable = tf.function(
         model.call,
@@ -243,6 +330,7 @@ if __name__ == "__main__":
     converter = tf.lite.TFLiteConverter.from_concrete_functions(
         [tf_concrete_function], tf_callable
     )
+    converter.allow_custom_ops = True
     tflite_model = converter.convert()
     with open(os.path.join(CURR_DIR, "model1.tflite"), "wb") as f:
         f.write(tflite_model)
