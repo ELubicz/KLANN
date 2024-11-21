@@ -71,11 +71,11 @@ def tf_lfilter(b, a, x, axis=-1, zi=[[0., 0.]]):
 class DSVF(keras.layers.Layer):
     """The DSVF module for TFLite"""
 
-    def __init__(self, fft_length, **kwargs):
+    def __init__(self, N, **kwargs):
         super().__init__(**kwargs)
         # define the filter parameters
-        self.n = fft_length
-        self.nfft = 2 ** math.ceil(math.log2(2 * self.n - 1))
+        self.N = N
+        self.nfft = 2 ** math.ceil(math.log2(2 * self.N - 1))
         self.g = self.add_weight(
             name="g",
             shape=(1,),
@@ -168,7 +168,7 @@ class DSVF(keras.layers.Layer):
                       2, g_2 - 2 * r * g + 1), axis=0)
 
         if training:
-            segments = tf.reshape(x, (x.shape[0], -1, self.n))
+            segments = tf.reshape(x, (x.shape[0], -1, self.N))
             xf = tf.signal.rfft(segments, fft_length=[self.nfft])
             hf = tf.signal.rfft(b, fft_length=[self.nfft]) / tf.signal.rfft(
                 a, fft_length=[self.nfft]
@@ -176,12 +176,12 @@ class DSVF(keras.layers.Layer):
             y = tf.signal.irfft(xf * hf, fft_length=[self.nfft])
 
             if segments.shape[1] == 1:
-                return tf.reshape(y[:, :, 0: self.n], (-1, self.n))
+                return tf.reshape(y[:, :, 0: self.N], (-1, self.N))
             else:
-                first_part = y[:, :, 0: self.n]
-                overlap = y[:, :-1, self.n: 2 * self.n]
+                first_part = y[:, :, 0: self.N]
+                overlap = y[:, :-1, self.N: 2 * self.N]
                 overlap_ext = tf.pad(overlap, ((0, 0), (1, 0)), "CONSTANT")
-                return tf.reshape(first_part + overlap_ext, (-1, self.n))
+                return tf.reshape(first_part + overlap_ext, (-1, self.N))
 
         else:
             y = tf_lfilter(b, a, x)
@@ -201,7 +201,7 @@ class MODEL_BASE(tf.keras.Model):
     Base model for both Model1 and Model2
     '''
 
-    def __init__(self, layers, num_biquads, fft_length, optimizer, **kwargs):
+    def __init__(self, layers, num_biquads, fft_length, optimizer=None, **kwargs):
         super().__init__(**kwargs)
         self.num_biquads = num_biquads
         self.fft_length = fft_length
@@ -239,20 +239,11 @@ class MODEL_BASE(tf.keras.Model):
         })
         return config
 
-    def get_model(self):
-        """
-        This is just a hack to allow model visualization in Neutron
-        """
-        return tf.keras.Sequential(self.layers)
-
 
 class MODEL1(MODEL_BASE):
     """
     DSVFs in parallel
     """
-
-    def __init__(self, hidden_layer_sizes, num_biquads, fft_length, optimizer, **kwargs):
-        super().__init__(hidden_layer_sizes, num_biquads, fft_length, optimizer, **kwargs)
 
     def call(self, x, training=None):
         """
@@ -273,7 +264,7 @@ class MODEL2(MODEL_BASE):
     DSVFs in parallel and series
     """
 
-    def __init__(self, hidden_layer_sizes, fc_layer_size, num_biquads, fft_length, optimizer, **kwargs):
+    def __init__(self, hidden_layer_sizes, fc_layer_size, num_biquads, fft_length, optimizer=None, **kwargs):
         super().__init__(hidden_layer_sizes, num_biquads, fft_length, optimizer, **kwargs)
 
         self.linear = []
@@ -320,7 +311,7 @@ if __name__ == "__main__":
     y_test = tf_lfilter(b_test, a_test, x_test)
 
     optimizer = tf.keras.optimizers.Adam(0.001)
-    input_shape = (None, 32, 1)
+    input_shape = (1, 32, 1)
 
     # Create empty instances of MODEL1 and MODEL2 and convert them to tflite
     def convert_to_tflite(model):
@@ -329,7 +320,7 @@ if __name__ == "__main__":
             model.call,
             autograph=False,
             input_signature=[tf.TensorSpec(
-                (1, *input_shape[1:]), LFILTER_DATA_DTYPE)],
+                input_shape, LFILTER_DATA_DTYPE)],
         )
         tf_concrete_function = tf_callable.get_concrete_function()
         converter = tf.lite.TFLiteConverter.from_concrete_functions(
@@ -341,18 +332,18 @@ if __name__ == "__main__":
 
     # MODEL1
     model1 = MODEL1([3, 4, 5], 5, 32768, optimizer)
-    model1.build(input_shape)
+    model1(tf.zeros(input_shape))
     # save keras model
-    model1.get_model().save(os.path.join(CURR_DIR, "model1.keras"))
+    model1.save(os.path.join(CURR_DIR, "model1.keras"))
     model1_tflite = convert_to_tflite(model1)
     with open(os.path.join(CURR_DIR, "model1.tflite"), "wb") as f:
         f.write(model1_tflite)
 
     # MODEL 2
     model2 = MODEL2([3, 4, 5], 5, 5, 32768, optimizer)
-    model2.build(input_shape)
+    model2(tf.zeros(input_shape))
     # save keras model
-    model2.get_model().save(os.path.join(CURR_DIR, "model2.keras"))
+    model2.save(os.path.join(CURR_DIR, "model2.keras"))
     model2_tflite = convert_to_tflite(model2)
     with open(os.path.join(CURR_DIR, "model2.tflite"), "wb") as f:
         f.write(model2_tflite)
