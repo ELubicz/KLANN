@@ -71,10 +71,10 @@ def tf_lfilter(b, a, x, axis=-1, zi=[[0., 0.]]):
 class DSVF(keras.layers.Layer):
     """The DSVF module for TFLite"""
 
-    def __init__(self, fir_length, **kwargs):
+    def __init__(self, fft_length, **kwargs):
         super().__init__(**kwargs)
         # define the filter parameters
-        self.n = fir_length
+        self.n = fft_length
         self.nfft = 2 ** math.ceil(math.log2(2 * self.n - 1))
         self.g = self.add_weight(
             name="g",
@@ -196,14 +196,15 @@ class DSVF(keras.layers.Layer):
 
 
 @keras.saving.register_keras_serializable()
-class MODEL1(tf.keras.Model):
-    """
-    DSVFs in parallel
-    """
+class MODEL_BASE(tf.keras.Model):
+    '''
+    Base model for both Model1 and Model2
+    '''
 
-    def __init__(self, layers, num_biquads, fir_length, optimizer, **kwargs):
+    def __init__(self, layers, num_biquads, fft_length, optimizer, **kwargs):
         super().__init__(**kwargs)
         self.num_biquads = num_biquads
+        self.fft_length = fft_length
         self.optimizer = optimizer  # needed by ReduceLROnPlateau callback
         self.stop_training = False  # needed by EarlyStopping callback
         mlp1 = []
@@ -217,15 +218,15 @@ class MODEL1(tf.keras.Model):
 
         self.filters = []
         for _ in range(self.num_biquads):
-            self.filters.append(DSVF(fir_length))
+            self.filters.append(DSVF(fft_length))
 
-        reversed_layers = layers.copy()
-        reversed_layers.reverse()
+        reverse_layers = layers.copy()
+        reverse_layers.reverse()
         mlp2 = []
-        mlp2.append(tf.keras.layers.Dense(2 * reversed_layers[0]))
+        mlp2.append(tf.keras.layers.Dense(2 * reverse_layers[0]))
         mlp2.append(GLU())
-        for i in range(1, len(reversed_layers)):
-            mlp2.append(tf.keras.layers.Dense(2 * reversed_layers[i]))
+        for i in range(1, len(reverse_layers)):
+            mlp2.append(tf.keras.layers.Dense(2 * reverse_layers[i]))
             mlp2.append(GLU())
         mlp2.append(tf.keras.layers.Dense(1))
         self.mlp2 = tf.keras.Sequential(mlp2)
@@ -234,8 +235,24 @@ class MODEL1(tf.keras.Model):
         config = super().get_config()
         config.update({
             "num_biquads": self.num_biquads,
+            "fft_length": self.fft_length,
         })
         return config
+
+    def get_model(self):
+        """
+        This is just a hack to allow model visualization in Neutron
+        """
+        return tf.keras.Sequential(self.layers)
+
+
+class MODEL1(MODEL_BASE):
+    """
+    DSVFs in parallel
+    """
+
+    def __init__(self, hidden_layer_sizes, num_biquads, fft_length, optimizer, **kwargs):
+        super().__init__(hidden_layer_sizes, num_biquads, fft_length, optimizer, **kwargs)
 
     def call(self, x, training=None):
         """
@@ -250,72 +267,38 @@ class MODEL1(tf.keras.Model):
             y.append(y_filt)
         return self.mlp2(tf.concat(y, axis=-1))
 
-    def get_model(self):
-        """
-        This is just a hack to allow model visualization in Neutron
-        """
-        return tf.keras.Sequential(self.layers)
 
-
-@keras.saving.register_keras_serializable()
-class MODEL2(tf.keras.Model):
+class MODEL2(MODEL_BASE):
     """
     DSVFs in parallel and series
-    TODO: create a base class for MODEL1 and MODEL2
     """
 
-    def __init__(self, layers, layer, n, N, optimizer, name=None):
-        super().__init__(name)
-        self.n = n
-        self.optimizer = optimizer  # needed by ReduceLROnPlateau callback
-        self.stop_training = False  # needed by EarlyStopping callback
-        mlp1 = []
-        mlp1.append(tf.keras.layers.Dense(2 * layers[0]))
-        mlp1.append(GLU())
-        for i in range(1, len(layers)):
-            mlp1.append(tf.keras.layers.Dense(2 * layers[i]))
-            mlp1.append(GLU())
-        mlp1.append(tf.keras.layers.Dense(n))
-        self.mlp1 = tf.keras.Sequential(mlp1)
+    def __init__(self, hidden_layer_sizes, fc_layer_size, num_biquads, fft_length, optimizer, **kwargs):
+        super().__init__(hidden_layer_sizes, num_biquads, fft_length, optimizer, **kwargs)
 
         self.linear = []
-        for _ in range(self.n - 1):
+        for _ in range(self.num_biquads - 1):
             self.linear.append(
                 tf.keras.Sequential(
                     [
-                        tf.keras.layers.Dense(2 * layer),
+                        tf.keras.layers.Dense(2 * fc_layer_size),
                         GLU(),
-                        tf.keras.layers.Dense(layer),
+                        tf.keras.layers.Dense(fc_layer_size),
                     ]
                 )
             )
-        self.filter = []
-        for _ in range(self.n):
-            self.filter.append(DSVF(N))
 
-        reverse_layers = layers.copy()
-        reverse_layers.reverse()
-        mlp2 = []
-        mlp2.append(tf.keras.layers.Dense(2 * reverse_layers[0]))
-        mlp2.append(GLU())
-        for i in range(1, len(reverse_layers)):
-            mlp2.append(tf.keras.layers.Dense(2 * reverse_layers[i]))
-            mlp2.append(GLU())
-        mlp2.append(tf.keras.layers.Dense(1))
-        self.mlp2 = tf.keras.Sequential(mlp2)
-
-    @tf.function
     def call(self, x, training=None):
         """
         The call function
         """
         y = self.mlp1(x)
-        z = self.filter[0].call(y[:, :, 0], training=training)[
+        z = self.filters[0].call(y[:, :, 0], training=training)[
             :, :, tf.newaxis]
         z_s = []
         z_s.append(z)
-        for i in range(self.n - 1):
-            z = self.filter[i + 1].call(
+        for i in range(self.num_biquads - 1):
+            z = self.filters[i + 1].call(
                 self.linear[i](
                     tf.concat((z, y[:, :, i + 1][:, :, tf.newaxis]), axis=-1)
                 )[:, :, 0],
@@ -324,44 +307,52 @@ class MODEL2(tf.keras.Model):
             z_s.append(z)
         return self.mlp2(tf.concat(z_s, axis=-1))
 
-    def get_model(self):
-        """
-        This is just a hack to allow model visualization in Neutron
-        """
-        return keras.Sequential(self.layers)
-
 
 if __name__ == "__main__":
     import os
 
     CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 
+    # Dry run to test tf_filter
     a_test = tf.constant([1., 1., 1.], dtype=LFILTER_COEFF_DTYPE)
     b_test = tf.constant([1., 1., 1.], dtype=LFILTER_COEFF_DTYPE)
     x_test = np.random.rand(50, 32768).astype(LFILTER_DATA_DTYPE)
-    y = tf_lfilter(b_test, a_test, x_test)
+    y_test = tf_lfilter(b_test, a_test, x_test)
 
     optimizer = tf.keras.optimizers.Adam(0.001)
-    model = MODEL1([3, 4, 5], 5, 32768, optimizer)
     input_shape = (None, 32, 1)
-    model.build(input_shape)
+
+    # Create empty instances of MODEL1 and MODEL2 and convert them to tflite
+    def convert_to_tflite(model):
+        # save tflite model with batch size 1
+        tf_callable = tf.function(
+            model.call,
+            autograph=False,
+            input_signature=[tf.TensorSpec(
+                (1, *input_shape[1:]), LFILTER_DATA_DTYPE)],
+        )
+        tf_concrete_function = tf_callable.get_concrete_function()
+        converter = tf.lite.TFLiteConverter.from_concrete_functions(
+            [tf_concrete_function], tf_callable
+        )
+        converter.allow_custom_ops = True
+        tflite_model = converter.convert()
+        return tflite_model
+
+    # MODEL1
+    model1 = MODEL1([3, 4, 5], 5, 32768, optimizer)
+    model1.build(input_shape)
     # save keras model
-    model.get_model().save(os.path.join(CURR_DIR, "model1.keras"))
-
-    # save tflite model with batch size 1
-    tf_callable = tf.function(
-        model.call,
-        autograph=False,
-        input_signature=[tf.TensorSpec(
-            (1, *input_shape[1:]), LFILTER_DATA_DTYPE)],
-    )
-    tf_concrete_function = tf_callable.get_concrete_function()
-    converter = tf.lite.TFLiteConverter.from_concrete_functions(
-        [tf_concrete_function], tf_callable
-    )
-    converter.allow_custom_ops = True
-    tflite_model = converter.convert()
+    model1.get_model().save(os.path.join(CURR_DIR, "model1.keras"))
+    model1_tflite = convert_to_tflite(model1)
     with open(os.path.join(CURR_DIR, "model1.tflite"), "wb") as f:
-        f.write(tflite_model)
+        f.write(model1_tflite)
 
-    # TODO: add conversion for model2
+    # MODEL 2
+    model2 = MODEL2([3, 4, 5], 5, 5, 32768, optimizer)
+    model2.build(input_shape)
+    # save keras model
+    model2.get_model().save(os.path.join(CURR_DIR, "model2.keras"))
+    model2_tflite = convert_to_tflite(model2)
+    with open(os.path.join(CURR_DIR, "model2.tflite"), "wb") as f:
+        f.write(model2_tflite)
