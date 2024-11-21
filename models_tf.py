@@ -2,6 +2,7 @@ import math
 import tensorflow as tf
 import keras
 from scipy import signal
+import numpy as np
 
 # pylint: disable=W0223
 
@@ -22,25 +23,47 @@ class GLU(tf.keras.layers.Layer):
         return first_half * tf.nn.sigmoid(second_half)
 
 
-@tf.numpy_function(Tout=tf.float32, name="Lfilter")
-def np_lfilter(b, a, x, zi=None):
-    y, zf = signal.lfilter(b, a, x, zi)
+# TODO: check why it doesn't work for np.float64
+LFILTER_COEFF_DTYPE = np.float32
+LFILTER_DATA_DTYPE = np.float32
+
+
+@tf.numpy_function(Tout=[LFILTER_DATA_DTYPE, LFILTER_DATA_DTYPE], name="Lfilter")
+def np_lfilter(b, a, x, axis=-1, zi=0.):
+    '''
+    tf.numpy_function wrapper for the SciPy's lfilter
+    '''
+    # We always define zi so that signal.lfilter returs both y and zf
+    # The default zi value is 0, which replaces the original None, since tf
+    # is not able to convert None to a tensor.
+    if np.allclose(zi, 0.):
+        # If zi is zero (default parameter), then we reshape it to x.shape
+        # redimensioning as needed
+        if len(x.shape) == 2:
+            zi = np.zeros([x.shape[0], max(len(a), len(b)) - 1])
+        else:
+            zi = np.zeros(max(len(a), len(b)))
+    # else, we assume zi was given with proper values in the correct shape
+
+    y, zf = signal.lfilter(b, a, x, int(axis), zi)
     # TODO: found a way to return both y and zf instead of
     # having to concatenate them in an tuple
-    return (y, zf)
+    return (y.astype(LFILTER_DATA_DTYPE), zf.astype(LFILTER_DATA_DTYPE))
 
 
 @tf.function(input_signature=[
-    tf.TensorSpec(shape=[None], dtype=tf.float32, name='b'),
-    tf.TensorSpec(shape=[None], dtype=tf.float32, name='a'),
-    tf.TensorSpec(shape=[None, None], dtype=tf.float32, name='x'),
-    # tf.TensorSpec(shape=[None, 2], name='zi')
-])
-def tf_lfilter(b, a, x, zi=None):
+    tf.TensorSpec(shape=[None], dtype=LFILTER_COEFF_DTYPE, name='b'),
+    tf.TensorSpec(shape=[None], dtype=LFILTER_COEFF_DTYPE, name='a'),
+    tf.TensorSpec(shape=[None, None], dtype=LFILTER_DATA_DTYPE, name='x'),
+    tf.TensorSpec(shape=None, dtype=tf.int32, name='axis'),
+    tf.TensorSpec(shape=[None, 2], dtype=LFILTER_DATA_DTYPE, name='zi'),
+], autograph=False)
+def tf_lfilter(b, a, x, axis=-1, zi=[[0., 0.]]):
     '''
-    TODO: output zf
+    tf.function wrapper for the numpy wrapper for the lfilter function
     '''
-    y_zf = np_lfilter(b, a, x)
+    y_zf = np_lfilter(b, a, x, axis, zi)
+    # TODO: output zf
     return y_zf[0]
 
 
@@ -103,8 +126,8 @@ class DSVF(keras.layers.Layer):
         a = a / a[0]
         b = b / a[0]
         y = [None] * x.shape[1]
-        zx = tf.zeros((x.shape[0], 2), dtype=tf.float32)
-        zy = tf.zeros((x.shape[0], 2), dtype=tf.float32)
+        zx = tf.zeros((x.shape[0], 2), dtype=LFILTER_DATA_DTYPE)
+        zy = tf.zeros((x.shape[0], 2), dtype=LFILTER_DATA_DTYPE)
         for i in range(x.shape[1]):
             x_samples = x[:, i]
             # pylint: disable=consider-using-enumerate
@@ -313,6 +336,11 @@ if __name__ == "__main__":
 
     CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 
+    a_test = tf.constant([1., 1., 1.], dtype=LFILTER_COEFF_DTYPE)
+    b_test = tf.constant([1., 1., 1.], dtype=LFILTER_COEFF_DTYPE)
+    x_test = np.random.rand(50, 32768).astype(LFILTER_DATA_DTYPE)
+    y = tf_lfilter(b_test, a_test, x_test)
+
     optimizer = tf.keras.optimizers.Adam(0.001)
     model = MODEL1([3, 4, 5], 5, 32768, optimizer)
     input_shape = (None, 32, 1)
@@ -324,7 +352,8 @@ if __name__ == "__main__":
     tf_callable = tf.function(
         model.call,
         autograph=False,
-        input_signature=[tf.TensorSpec((1, *input_shape[1:]), tf.float32)],
+        input_signature=[tf.TensorSpec(
+            (1, *input_shape[1:]), LFILTER_DATA_DTYPE)],
     )
     tf_concrete_function = tf_callable.get_concrete_function()
     converter = tf.lite.TFLiteConverter.from_concrete_functions(
