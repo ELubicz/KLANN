@@ -201,17 +201,18 @@ class MODEL_BASE(tf.keras.Model):
     Base model for both Model1 and Model2
     '''
 
-    def __init__(self, layers, num_biquads, fft_length, optimizer=None, **kwargs):
+    def __init__(self, hidden_layer_sizes, num_biquads, fft_length, optimizer=None, **kwargs):
         super().__init__(**kwargs)
         self.num_biquads = num_biquads
         self.fft_length = fft_length
+        self.hidden_layer_sizes = hidden_layer_sizes
         self.optimizer = optimizer  # needed by ReduceLROnPlateau callback
         self.stop_training = False  # needed by EarlyStopping callback
         mlp1 = []
-        mlp1.append(tf.keras.layers.Dense(2 * layers[0]))
+        mlp1.append(tf.keras.layers.Dense(2 * hidden_layer_sizes[0]))
         mlp1.append(GLU())
-        for i in range(1, len(layers)):
-            mlp1.append(tf.keras.layers.Dense(2 * layers[i]))
+        for i in range(1, len(hidden_layer_sizes)):
+            mlp1.append(tf.keras.layers.Dense(2 * hidden_layer_sizes[i]))
             mlp1.append(GLU())
         mlp1.append(tf.keras.layers.Dense(num_biquads))
         self.mlp1 = tf.keras.Sequential(mlp1)
@@ -220,7 +221,7 @@ class MODEL_BASE(tf.keras.Model):
         for _ in range(self.num_biquads):
             self.filters.append(DSVF(fft_length))
 
-        reverse_layers = layers.copy()
+        reverse_layers = hidden_layer_sizes.copy()
         reverse_layers.reverse()
         mlp2 = []
         mlp2.append(tf.keras.layers.Dense(2 * reverse_layers[0]))
@@ -232,14 +233,19 @@ class MODEL_BASE(tf.keras.Model):
         self.mlp2 = tf.keras.Sequential(mlp2)
 
     def get_config(self):
+        '''
+        Add custom init() params to the config so that it is able to serialize properly
+        '''
         config = super().get_config()
         config.update({
+            "hidden_layer_sizes": self.hidden_layer_sizes,
             "num_biquads": self.num_biquads,
             "fft_length": self.fft_length,
         })
         return config
 
 
+@keras.saving.register_keras_serializable()
 class MODEL1(MODEL_BASE):
     """
     DSVFs in parallel
@@ -259,6 +265,7 @@ class MODEL1(MODEL_BASE):
         return self.mlp2(tf.concat(y, axis=-1))
 
 
+@keras.saving.register_keras_serializable()
 class MODEL2(MODEL_BASE):
     """
     DSVFs in parallel and series
@@ -266,6 +273,7 @@ class MODEL2(MODEL_BASE):
 
     def __init__(self, hidden_layer_sizes, fc_layer_size, num_biquads, fft_length, optimizer=None, **kwargs):
         super().__init__(hidden_layer_sizes, num_biquads, fft_length, optimizer, **kwargs)
+        self.fc_layer_size = fc_layer_size
 
         self.linear = []
         for _ in range(self.num_biquads - 1):
@@ -298,6 +306,16 @@ class MODEL2(MODEL_BASE):
             z_s.append(z)
         return self.mlp2(tf.concat(z_s, axis=-1))
 
+    def get_config(self):
+        '''
+        Add fc_layer_size to the config so that it is able to serialize properly
+        '''
+        config = super().get_config()
+        config.update({
+            "fc_layer_size": self.fc_layer_size,
+        })
+        return config
+
 
 if __name__ == "__main__":
     import os
@@ -314,7 +332,9 @@ if __name__ == "__main__":
     input_shape = (1, 32, 1)
 
     # Create empty instances of MODEL1 and MODEL2 and convert them to tflite
-    def convert_to_tflite(model):
+    def convert_to_tflite(model, name=None):
+        if name is not None:
+            model.name = name
         # save tflite model with batch size 1
         tf_callable = tf.function(
             model.call,
@@ -328,22 +348,30 @@ if __name__ == "__main__":
         )
         converter.allow_custom_ops = True
         tflite_model = converter.convert()
-        return tflite_model
+
+        with open(os.path.join(CURR_DIR, f"{model.name}.tflite"), "wb") as f:
+            f.write(tflite_model)
+
+    def save_and_verify_keras(model, name=None):
+        if name is not None:
+            model.name = name
+        model.save(os.path.join(CURR_DIR, f"{model.name}.keras"))
+        model_from_file = tf.keras.models.load_model(
+            os.path.join(CURR_DIR, f"{model.name}.keras"))
+        # Check if the model loaed from file is similar to the original model
+        assert model_from_file.get_config() == model.get_config()
+        assert len(model.layers) == len(model_from_file.layers)
+        for weights1, weights2 in zip(model.get_weights(), model_from_file.get_weights()):
+            assert np.allclose(weights1, weights2)
 
     # MODEL1
     model1 = MODEL1([3, 4, 5], 5, 32768, optimizer)
     model1(tf.zeros(input_shape))
-    # save keras model
-    model1.save(os.path.join(CURR_DIR, "model1.keras"))
-    model1_tflite = convert_to_tflite(model1)
-    with open(os.path.join(CURR_DIR, "model1.tflite"), "wb") as f:
-        f.write(model1_tflite)
+    save_and_verify_keras(model1, "model1")
+    convert_to_tflite(model1, "model1")
 
     # MODEL 2
     model2 = MODEL2([3, 4, 5], 5, 5, 32768, optimizer)
     model2(tf.zeros(input_shape))
-    # save keras model
-    model2.save(os.path.join(CURR_DIR, "model2.keras"))
-    model2_tflite = convert_to_tflite(model2)
-    with open(os.path.join(CURR_DIR, "model2.tflite"), "wb") as f:
-        f.write(model2_tflite)
+    save_and_verify_keras(model2, "model2")
+    convert_to_tflite(model2, "model2")
