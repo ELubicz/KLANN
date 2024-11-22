@@ -241,9 +241,6 @@ def main(
     # save final model for retrain
     tf.saved_model.save(model, "results/" + directory + "/saved_model_final.keras")
 
-#x = tf.expand_dims(x, axis=-1)
-#y = tf.expand_dims(y, axis=-1)
-
 
 if __name__ == "__main__":
     import argparse

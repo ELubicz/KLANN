@@ -28,7 +28,7 @@ LFILTER_COEFF_DTYPE = np.float32
 LFILTER_DATA_DTYPE = np.float32
 
 
-@tf.numpy_function(Tout=[LFILTER_DATA_DTYPE, LFILTER_DATA_DTYPE], name="Lfilter")
+#@tf.numpy_function(Tout=[LFILTER_DATA_DTYPE, LFILTER_DATA_DTYPE], name="Lfilter")
 def np_lfilter(b, a, x, axis=-1, zi=0.):
     '''
     tf.numpy_function wrapper for the SciPy's lfilter
@@ -62,12 +62,13 @@ def tf_lfilter(b, a, x, axis=-1, zi=[[0., 0.]]):
     '''
     tf.function wrapper for the numpy wrapper for the lfilter function
     '''
-    y_zf = np_lfilter(b, a, x, axis, zi)
+    #y_zf = np_lfilter(b, a, x, axis, zi)
+    y_zf = tf.numpy_function(np_lfilter, [b, a, x, axis, zi], Tout=[LFILTER_DATA_DTYPE, LFILTER_DATA_DTYPE], name="Lfilter")
     # TODO: output zf
     return y_zf[0]
 
 
-@keras.saving.register_keras_serializable()
+@tf.keras.utils.register_keras_serializable()
 class DSVF(keras.layers.Layer):
     """The DSVF module for TFLite"""
 
@@ -205,7 +206,7 @@ class DSVF(keras.layers.Layer):
         return input_shape
 
 
-@keras.saving.register_keras_serializable()
+@tf.keras.utils.register_keras_serializable()
 class MODEL_BASE(tf.keras.Model):
     '''
     Base model for both Model1 and Model2
