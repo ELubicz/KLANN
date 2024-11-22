@@ -1,12 +1,14 @@
 import os
 import shutil
 import time
+import datetime
+import keras
 import tensorflow as tf
 import soundfile as sf
 import auraloss
+from pathlib import Path
 from preprocess_tf import PreProcess
-from tensorflow.summary import create_file_writer
-from tensorflow.keras.callbacks import CallbackList, ReduceLROnPlateau, EarlyStopping
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping, TensorBoard, ModelCheckpoint
 from models_tf import MODEL2, MODEL1
 from tqdm import tqdm
 
@@ -40,7 +42,7 @@ def main(
     # MODIFIABLE
     # ------------------------------------------------
     # loss functions
-    loss_func = tf.keras.losses.MeanSquaredError()
+    loss_func1 = tf.keras.losses.MeanSquaredError()
     loss_func2 = auraloss.freq.MultiResolutionSTFTLoss(
         fft_sizes=[1024, 512, 256],
         hop_sizes=[120, 50, 25],
@@ -51,6 +53,29 @@ def main(
     scheduler_patience = int(10)  # 10 epochs
     earlystopper_patience = int(n_epochs * 0.1)  # 10% of total number of epochs
     # ------------------------------------------------
+
+    # define custom loss function
+    def loss_computation(y_true, y_pred, func1, func2, multires_stft, trunc_len, alpha_param):
+        # calculate loss
+        # truncate before to stabilize filters
+        if multires_stft:
+            loss = func1(
+                y_pred[:, trunc_len:, 0], y_true[:, trunc_len:, 0]
+            ) + alpha_param * func2(
+                y_pred[:, trunc_len:, :].permute(0, 2, 1),
+                y_true[:, trunc_len:, :].permute(0, 2, 1),
+            )
+        else:
+            loss = func1(y_pred[:, trunc_len:, 0], y_true[:, trunc_len:, 0])
+
+        return loss
+    # model.fit() function requires a loss function with two arguments: (y_true, y_pred)
+    def model_loss(func1, func2, multires_stft, trunc_len, alpha_param):
+        def loss(y_true, y_pred):
+            return loss_computation(y_true, y_pred, func1, func2, multires_stft, trunc_len, alpha_param)
+        return loss
+    # now we can initialize the loss function
+    loss_func = model_loss(loss_func1, loss_func2, mr_stft, trunc_length, alpha)
 
     # create folder
     if not retrain:
@@ -85,10 +110,6 @@ def main(
         )
     print("Model: " + directory)
 
-    # initialize TensorBoard
-    print("Initializing TensorBoard")
-    writer = create_file_writer("results/" + directory + "/" + "model_" + data)
-
     # preprocess audio
     train_input, _ = sf.read("data/train/" + data + "-input.wav", dtype="float32")
     train_target, _ = sf.read("data/train/" + data + "-target.wav")
@@ -121,255 +142,107 @@ def main(
     )
     # initialize model
     print("Initializing model")
-    if model_train == "MODEL1":
-        model = MODEL1(glu_mlp_hidden_layer_sizes, num_biquads, fir_length, model_optimizer)
-    if model_train == "MODEL2":
-        model = MODEL2(
-            glu_mlp_hidden_layer_sizes, fc_layer_size, num_biquads, fir_length, model_optimizer
-        )
-
-    # initialize checkpoints
-    checkpoint = tf.train.Checkpoint(optimizer=model_optimizer,
-                                     model=model)
-    chkpt_manager = tf.train.CheckpointManager(checkpoint, "results/" + directory + "./tf_ckpts", max_to_keep=1)
+    input_shape = [seq_length + trunc_length, 1]
     if retrain:
-        chkpt_manager.restore_or_initialize()
-        # reset the learning rate to the initial value
-        model_optimizer.learning_rate.assign(learning_rate)
-        model.optimizer = model_optimizer
+        model = keras.models.load_model("results/" + directory + "/saved_model_final.keras")
+    else:
+        if model_train == "MODEL1":
+            model_inst = MODEL1(glu_mlp_hidden_layer_sizes, num_biquads, fir_length, model_optimizer)
+        if model_train == "MODEL2":
+            model_inst = MODEL2(
+                glu_mlp_hidden_layer_sizes, fc_layer_size, num_biquads, fir_length, model_optimizer
+            )
+        model = model_inst.get_model(input_shape, training=True)
+    
+        # compile model
+        model.compile(optimizer=model_optimizer, loss=loss_func)
+    model.summary()
 
     # callbacks
+    time_stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    tb_log_dir = Path(__file__).parent / "tb_logs" / (time_stamp + "_" + directory)
     callbacks = None
     if scheduler_patience:
         if earlystopper_patience:
-            callbacks = CallbackList(
-                [
-                    ReduceLROnPlateau(
-                        monitor="val_loss",
-                        factor=0.1,
-                        patience=scheduler_patience,
-                        min_lr=1e-6,
-                        verbose=1,
-                    ),
-                    EarlyStopping(
-                        monitor="val_loss", patience=earlystopper_patience, verbose=1
-                    ),
-                ],
-                add_history=True,
-                model=model,
-            )
-        else:
-            callbacks = CallbackList(
-                [
-                    ReduceLROnPlateau(
-                        monitor="val_loss",
-                        factor=0.1,
-                        patience=scheduler_patience,
-                        min_lr=1e-6,
-                        verbose=1,
-                    )
-                ],
-                add_history=True,
-                model=model,
-            )
-    elif earlystopper_patience:
-        callbacks = CallbackList(
-            [
+            callbacks = [
+                ReduceLROnPlateau(
+                    monitor="val_loss",
+                    factor=0.1,
+                    patience=scheduler_patience,
+                    min_lr=1e-6,
+                    verbose=1,
+                ),
                 EarlyStopping(
                     monitor="val_loss", patience=earlystopper_patience, verbose=1
+                ),
+                TensorBoard(
+                    log_dir=tb_log_dir, 
+                    histogram_freq=0
+                ),
+                ModelCheckpoint(
+                    filepath="results/" + directory + "/saved_model_best.keras",
+                    save_best_only=True, 
+                    monitor='val_loss', 
+                    mode='min',
+                    save_weights_only=False
                 )
-            ],
-            add_history=True,
-            model=model,
-        )
-    callback_log = (
-        {}
-    )  # log to update the monitored values during training (need to update manually!!)
-    if callbacks:
-        callbacks.on_train_begin(logs=callback_log)
-
-    if retrain:
-        best_loss, callback_log = val_loop(
-            model,
-            val_dataset,
-            mr_stft,
-            loss_func,
-            loss_func2,
-            alpha,
-            trunc_length,
-            callbacks.callbacks,
-            callback_log,
-        )
-    else:
-        best_loss = float("inf")
-
-    start = time.time()
-    for epoch in range(n_epochs):
-        start_epoch = time.time()
-        print(f"Epoch {epoch+1}/{n_epochs}")
-        if callbacks:
-            callbacks.on_epoch_begin(epoch, logs=callback_log)
-        # train for one epoch
-        print("Training...")
-        train_loss, callback_log = train_loop(
-            model,
-            train_dataset,
-            mr_stft,
-            loss_func,
-            loss_func2,
-            alpha,
-            trunc_length,
-            model_optimizer,
-            callbacks,
-            callback_log,
-        )
-
-        # validation
-        if epoch % 2 == 0:
-            print("Validation...")
-            val_loss, callback_log = val_loop(
-                model,
-                val_dataset,
-                mr_stft,
-                loss_func,
-                loss_func2,
-                alpha,
-                trunc_length,
-                callbacks,
-                callback_log,
-            )
-            callback_log["val_loss"] = val_loss  # update callback log
-            if val_loss < best_loss:
-                best_loss = val_loss
-                chkpt_manager.save()
-                tf.saved_model.save(model, "results/" + directory + "/saved_model")
-                print("-- New best val loss")
-            print(f"-- Train Loss {train_loss:.3E} Val Loss {val_loss:.3E}")
+            ]
         else:
-            print(f"-- Train Loss {train_loss:.3E}")
-
-        # log loss
-        with writer.as_default():
-            tf.summary.scalar("Train loss", train_loss, step=epoch)
-            tf.summary.scalar("Val loss", val_loss, step=epoch)
-        end_epoch = time.time()
-        print(f"-- Epoch time elapsed: {end_epoch - start_epoch:3.1f}s")
-
-        if callbacks:
-            callbacks.on_epoch_end(epoch, logs=callback_log)
-            model_optimizer.learning_rate.assign(model.optimizer.learning_rate)  # refresh the lr of model_optimizer
-        # check if early stopping has triggered stop_training
-        if model.stop_training:
-            break
-
-    if callbacks:
-        callbacks.on_train_end(logs=callback_log)
-
-    writer.flush()
+            callbacks = [
+                ReduceLROnPlateau(
+                    monitor="val_loss",
+                    factor=0.1,
+                    patience=scheduler_patience,
+                    min_lr=1e-6,
+                    verbose=1,
+                ),
+                TensorBoard(
+                    log_dir=tb_log_dir, 
+                    histogram_freq=0
+                ),
+                ModelCheckpoint(
+                    filepath="results/" + directory + "/saved_model_best.keras",
+                    save_best_only=True, 
+                    monitor='val_loss', 
+                    mode='min',
+                    save_weights_only=False
+                )
+            ]
+    elif earlystopper_patience:
+        callbacks = [
+                EarlyStopping(
+                    monitor="val_loss", patience=earlystopper_patience, verbose=1
+                ),
+                TensorBoard(
+                    log_dir=tb_log_dir, 
+                    histogram_freq=0
+                ),
+                ModelCheckpoint(
+                    filepath="results/" + directory + "/saved_model_best.keras",
+                    save_best_only=True, 
+                    monitor='val_loss', 
+                    mode='min',
+                    save_weights_only=False
+                )
+            ]
+    
+    # train
+    start = time.time()
+    print("Training...")
+    hist = model.fit(
+        train_dataset,
+        epochs=n_epochs,
+        validation_data=val_dataset,
+        callbacks=callbacks,
+        validation_freq=2
+    )
     print(f"Total time elapsed: {time.time() - start:3.1f}s")
 
     # save final model for retrain
-    chkpt_manager.save()
-    tf.saved_model.save(model, "results/" + directory + "/saved_model_final")
+    tf.saved_model.save(model, "results/" + directory + "/saved_model_final.keras")
 
-
-def train_loop(
-    model,
-    dataset,
-    mr_stft,
-    loss_func,
-    loss_func2,
-    alpha,
-    trunc_length,
-    model_optimizer,
-    callbacks,
-    callback_log,
-):
-    """Train loop for one epoch"""
-    train_loss = 0
-    batch = 0
-    for x, y in tqdm(dataset):
-        if callbacks:
-            callbacks.on_batch_begin(batch, logs=callback_log)
-            callbacks.on_train_batch_begin(batch, logs=callback_log)
-
-        # compute prediction
-        with tf.GradientTape() as tape:
-            # add one dimension to the input and output
-            x = tf.expand_dims(x, axis=-1)
-            y = tf.expand_dims(y, axis=-1)
-            y_hat = model.call(x, training=True)
-
-            # calculate loss
-            # truncate before to stabilize filters
-            if mr_stft:
-                loss = loss_func(
-                    y_hat[:, trunc_length:, 0], y[:, trunc_length:, 0]
-                ) + alpha * loss_func2(
-                    y_hat[:, trunc_length:, :].permute(0, 2, 1),
-                    y[:, trunc_length:, :].permute(0, 2, 1),
-                )
-            else:
-                loss = loss_func(y_hat[:, trunc_length:, 0], y[:, trunc_length:, 0])
-
-        # backpropagation
-        gradients = tape.gradient(loss, model.trainable_variables)
-        model_optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-        # accumulate loss
-        train_loss += loss.numpy()
-
-        if callbacks:
-            callbacks.on_batch_end(batch, logs=callback_log)
-            callbacks.on_train_batch_end(batch, logs=callback_log)
-        batch += 1
-
-    # return average loss of one epoch
-    return train_loss / batch, callback_log
-
-
-def val_loop(
-    model,
-    dataset,
-    mr_stft,
-    loss_func,
-    loss_func2,
-    alpha,
-    trunc_length,
-    callbacks,
-    callback_log,
-):
-    """Validation loop for one epoch"""
-    val_loss = 0
-    batch = 0
-    for x, y in tqdm(dataset):
-        if callbacks:
-            callbacks.on_batch_begin(batch, logs=callback_log)
-            callbacks.on_test_batch_begin(batch, logs=callback_log)
-
-        # add one dimension to the input and output
-        x = tf.expand_dims(x, axis=-1)
-        y = tf.expand_dims(y, axis=-1)
-        y_hat = model.call(x, training=False)
-
-        if mr_stft:
-            loss = loss_func(
-                y_hat[:, trunc_length:, 0], y[:, trunc_length:, 0]
-            ) + alpha * loss_func2(
-                y_hat[:, trunc_length:, :].permute(0, 2, 1),
-                y[:, trunc_length:, :].permute(0, 2, 1),
-            )
-        else:
-            loss = loss_func(y_hat[:, trunc_length:, 0], y[:, trunc_length:, 0])
-
-        val_loss += loss.numpy()
-
-        if callbacks:
-            callbacks.on_batch_end(batch, logs=callback_log)
-            callbacks.on_test_batch_end(batch, logs=callback_log)
-        batch += 1
-
-    return val_loss / batch, callback_log
+#x = tf.expand_dims(x, axis=-1)
+#y = tf.expand_dims(y, axis=-1)
 
 
 if __name__ == "__main__":

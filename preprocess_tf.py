@@ -14,8 +14,8 @@ def PreProcess(train_input, train_target, sequence_length, truncate_length, batc
     # Map indices to sequences
     def map_fn(i):
         return (
-            train_input[i : i + sequence_length + truncate_length],
-            train_target[i : i + sequence_length + truncate_length],
+            tf.ensure_shape(tf.expand_dims(train_input[i : i + sequence_length + truncate_length], axis=-1), [sequence_length + truncate_length, 1]),
+            tf.ensure_shape(tf.expand_dims(train_target[i : i + sequence_length + truncate_length], axis=-1), [sequence_length + truncate_length, 1]),
         )
 
     dataset = dataset.map(map_fn)

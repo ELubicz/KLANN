@@ -71,10 +71,11 @@ def tf_lfilter(b, a, x, axis=-1, zi=[[0., 0.]]):
 class DSVF(keras.layers.Layer):
     """The DSVF module for TFLite"""
 
-    def __init__(self, fft_length, **kwargs):
+    def __init__(self, fft_length, filter_num, **kwargs):
         super().__init__(**kwargs)
         # define the filter parameters
         self.n = fft_length
+        self.count = filter_num
         self.nfft = 2 ** math.ceil(math.log2(2 * self.n - 1))
         self.g = self.add_weight(
             name="g",
@@ -168,27 +169,36 @@ class DSVF(keras.layers.Layer):
                       2, g_2 - 2 * r * g + 1), axis=0)
 
         if training:
-            segments = tf.reshape(x, (x.shape[0], -1, self.n))
-            xf = tf.signal.rfft(segments, fft_length=[self.nfft])
-            hf = tf.signal.rfft(b, fft_length=[self.nfft]) / tf.signal.rfft(
-                a, fft_length=[self.nfft]
-            )
-            y = tf.signal.irfft(xf * hf, fft_length=[self.nfft])
+            #segments = tf.reshape(x, (x.shape[0], -1, self.n))
+            segments = keras.layers.Reshape((-1, self.n))(x)
+            #xf = tf.signal.rfft(segments, fft_length=[self.nfft])
+            xf = keras.layers.Lambda(lambda k: tf.signal.rfft(k, fft_length=[self.nfft]), 
+                                     output_shape=(segments.shape[1], int((self.nfft/2)+1)), #dtype='complex64', 
+                                     name=f'rfft_{self.count}')(segments)
+            hf = tf.signal.rfft(b, fft_length=[self.nfft]) / tf.signal.rfft(a, fft_length=[self.nfft])
+            #y = tf.signal.irfft(xf * hf, fft_length=[self.nfft])
+            y = keras.layers.Lambda(lambda k: tf.signal.irfft(k * hf, fft_length=[self.nfft]),
+                                    output_shape=(segments.shape[1], self.nfft), name=f'irfft_{self.count}')(xf)
 
             if segments.shape[1] == 1:
-                return tf.reshape(y[:, :, 0: self.n], (-1, self.n))
+                y = keras.layers.Reshape((self.n,))(y[:, :, 0: self.n])
+                #return tf.reshape(y[:, :, 0: self.n], (-1, self.n))
+                return y
             else:
                 first_part = y[:, :, 0: self.n]
                 overlap = y[:, :-1, self.n: 2 * self.n]
                 overlap_ext = tf.pad(overlap, ((0, 0), (1, 0)), "CONSTANT")
-                return tf.reshape(first_part + overlap_ext, (-1, self.n))
+                y = keras.layers.Reshape((self.n,))(first_part + overlap_ext)
+                #return tf.reshape(first_part + overlap_ext, (-1, self.n))
+                return y
 
         else:
-            y = tf_lfilter(b, a, x)
+            y = keras.layers.Lambda(lambda k: tf_lfilter(b, a, k), output_shape=x.shape, name=f'lfilter_{self.count}')(x) 
+            #y = tf_lfilter(b, a, x)
             # For some reason, y comes out with unknown shape
             # Hence we need to set the shape manually
             # See https://stackoverflow.com/questions/75110247/keras-custom-layer-unknown-output-shape
-            y.set_shape(x.shape)
+            #y.set_shape(x.shape)
             return y
 
     def compute_output_shape(self, input_shape):
@@ -217,8 +227,8 @@ class MODEL_BASE(tf.keras.Model):
         self.mlp1 = tf.keras.Sequential(mlp1)
 
         self.filters = []
-        for _ in range(self.num_biquads):
-            self.filters.append(DSVF(fft_length))
+        for filt_num in range(self.num_biquads):
+            self.filters.append(DSVF(fft_length, filt_num))
 
         reverse_layers = layers.copy()
         reverse_layers.reverse()
@@ -239,11 +249,12 @@ class MODEL_BASE(tf.keras.Model):
         })
         return config
 
-    def get_model(self):
+    def get_model(self, input_shape, training=None):
         """
         This is just a hack to allow model visualization in Neutron
         """
-        return tf.keras.Sequential(self.layers)
+        x = tf.keras.layers.Input(shape=input_shape)
+        return tf.keras.Model(inputs=[x], outputs=self.call(x, training=training))
 
 
 class MODEL1(MODEL_BASE):
@@ -263,9 +274,12 @@ class MODEL1(MODEL_BASE):
         for i in range(self.num_biquads):
             y_filt = self.filters[i].call(z[:, :, i], training=training)
             # expand dimension
-            y_filt = tf.expand_dims(y_filt, axis=-1)
+            #y_filt = tf.expand_dims(y_filt, axis=-1)
+            y_filt = keras.layers.Lambda(lambda k: tf.expand_dims(k, axis=-1), name=f'expand_dims_{i}')(y_filt) 
             y.append(y_filt)
-        return self.mlp2(tf.concat(y, axis=-1))
+        y = keras.layers.Concatenate(axis=-1)(y)
+        #return self.mlp2(tf.concat(y, axis=-1))
+        return self.mlp2(y)
 
 
 class MODEL2(MODEL_BASE):
